@@ -245,9 +245,24 @@ func (c *Collector) StreamCandles(ctx context.Context, symbols []string, tf exch
 type wsLiquidation struct {
 	Time     exchange.StringInt64 `json:"T"`
 	Symbol   string               `json:"s"`
-	Side     string               `json:"S"` // "Sell" = long liquidated, "Buy" = short liquidated
+	Side     string               `json:"S"` // "Buy" = long liquidated (closed via sell), "Sell" = short liquidated (closed via buy)
 	Quantity exchange.StringFloat `json:"v"`
 	Price    exchange.StringFloat `json:"p"`
+}
+
+// bybitLiquidationSide maps Bybit's allLiquidation "S" field (the position
+// side that was liquidated) to our own LiquidationSide (the side of the
+// forced order that closed it). Per Bybit's docs
+// (https://bybit-exchange.github.io/docs/v5/websocket/public/all-liquidation):
+// "When you receive a Buy update, this means that a long position has been
+// liquidated" — a long is closed by a forced sell, so "Buy" maps to
+// LiquidationSell; symmetrically "Sell" (a short liquidated) maps to
+// LiquidationBuy.
+func bybitLiquidationSide(raw string) exchange.LiquidationSide {
+	if raw == "Buy" {
+		return exchange.LiquidationSell
+	}
+	return exchange.LiquidationBuy
 }
 
 // StreamLiquidations subscribes to Bybit's allLiquidation.{symbol} topic.
@@ -282,10 +297,7 @@ func (c *Collector) StreamLiquidations(ctx context.Context, symbols []string) (<
 				if !ok {
 					continue
 				}
-				side := exchange.LiquidationSell
-				if l.Side == "Buy" {
-					side = exchange.LiquidationBuy
-				}
+				side := bybitLiquidationSide(l.Side)
 				select {
 				case out <- exchange.Liquidation{Symbol: sym, Time: l.Time.Time(), Side: side, Price: float64(l.Price), Quantity: float64(l.Quantity)}:
 				case <-ctx.Done():
