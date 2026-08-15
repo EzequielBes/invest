@@ -5,11 +5,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"market-data/internal/exchange"
 	"market-data/internal/httpclient"
+	"market-data/internal/wsclient"
 )
+
+// Compile-time assertion that *Collector satisfies exchange.Collector.
+var _ exchange.Collector = (*Collector)(nil)
 
 type Collector struct {
 	client  *httpclient.Client
@@ -168,3 +174,126 @@ func (c *Collector) FetchOpenInterest(ctx context.Context, symbol string, from, 
 	return points, nil
 }
 
+type wsEnvelope struct {
+	Topic string          `json:"topic"`
+	Data  json.RawMessage `json:"data"`
+}
+
+type wsKline struct {
+	Start   exchange.StringInt64 `json:"start"`
+	Open    exchange.StringFloat `json:"open"`
+	High    exchange.StringFloat `json:"high"`
+	Low     exchange.StringFloat `json:"low"`
+	Close   exchange.StringFloat `json:"close"`
+	Volume  exchange.StringFloat `json:"volume"`
+	Confirm bool                 `json:"confirm"`
+}
+
+// StreamCandles subscribes to Bybit's public linear WS (confirmed reachable
+// from this environment, unlike Binance futures WS — see Task 8) for
+// kline.{interval}.{symbol} topics and emits a Candle only for confirmed
+// (closed) bars; in-progress bars (confirm:false) are dropped to avoid
+// re-emitting a still-forming candle on every tick.
+func (c *Collector) StreamCandles(ctx context.Context, symbols []string, tf exchange.Timeframe) (<-chan exchange.Candle, error) {
+	code, ok := timeframeCode[tf]
+	if !ok {
+		return nil, fmt.Errorf("bybit: unsupported timeframe %q", tf)
+	}
+	topics := make([]string, len(symbols))
+	symbolOf := map[string]string{}
+	for i, s := range symbols {
+		topics[i] = "kline." + code + "." + instrument(s)
+		symbolOf[instrument(s)] = s
+	}
+
+	out := make(chan exchange.Candle)
+	go func() {
+		defer close(out)
+		wsclient.Connect(ctx, "wss://stream.bybit.com/v5/public/linear", func(raw []byte) {
+			var env wsEnvelope
+			if err := json.Unmarshal(raw, &env); err != nil || !strings.HasPrefix(env.Topic, "kline.") {
+				return
+			}
+			parts := strings.Split(env.Topic, ".")
+			sym, ok := symbolOf[parts[len(parts)-1]]
+			if !ok {
+				return
+			}
+			var klines []wsKline
+			if err := json.Unmarshal(env.Data, &klines); err != nil {
+				return
+			}
+			for _, k := range klines {
+				if !k.Confirm {
+					continue
+				}
+				select {
+				case out <- exchange.Candle{
+					Symbol: sym, Timeframe: tf, Time: k.Start.Time(),
+					Open: float64(k.Open), High: float64(k.High), Low: float64(k.Low), Close: float64(k.Close), Volume: float64(k.Volume),
+				}:
+				case <-ctx.Done():
+				}
+			}
+		}, wsclient.OnConnect(func(conn *websocket.Conn) error {
+			return conn.WriteJSON(map[string]any{"op": "subscribe", "args": topics})
+		}))
+	}()
+	return out, nil
+}
+
+type wsLiquidation struct {
+	Time     exchange.StringInt64 `json:"T"`
+	Symbol   string               `json:"s"`
+	Side     string               `json:"S"` // "Sell" = long liquidated, "Buy" = short liquidated
+	Quantity exchange.StringFloat `json:"v"`
+	Price    exchange.StringFloat `json:"p"`
+}
+
+// StreamLiquidations subscribes to Bybit's allLiquidation.{symbol} topic.
+// Bybit renamed this from liquidation.{symbol}; live-verified in this
+// environment (Task 10) that allLiquidation.BTCUSDT subscribes successfully
+// while liquidation.BTCUSDT is rejected outright with
+// "error:handler not found,topic:liquidation.BTCUSDT" — confirming the old
+// name is retired, even though no live liquidation event arrived in the
+// verification window (they are infrequent).
+func (c *Collector) StreamLiquidations(ctx context.Context, symbols []string) (<-chan exchange.Liquidation, error) {
+	topics := make([]string, len(symbols))
+	symbolOf := map[string]string{}
+	for i, s := range symbols {
+		topics[i] = "allLiquidation." + instrument(s)
+		symbolOf[instrument(s)] = s
+	}
+
+	out := make(chan exchange.Liquidation)
+	go func() {
+		defer close(out)
+		wsclient.Connect(ctx, "wss://stream.bybit.com/v5/public/linear", func(raw []byte) {
+			var env wsEnvelope
+			if err := json.Unmarshal(raw, &env); err != nil || !strings.HasPrefix(env.Topic, "allLiquidation.") {
+				return
+			}
+			var liqs []wsLiquidation
+			if err := json.Unmarshal(env.Data, &liqs); err != nil {
+				return
+			}
+			for _, l := range liqs {
+				sym, ok := symbolOf[l.Symbol]
+				if !ok {
+					continue
+				}
+				side := exchange.LiquidationSell
+				if l.Side == "Buy" {
+					side = exchange.LiquidationBuy
+				}
+				select {
+				case out <- exchange.Liquidation{Symbol: sym, Time: l.Time.Time(), Side: side, Price: float64(l.Price), Quantity: float64(l.Quantity)}:
+				case <-ctx.Done():
+				}
+			}
+		}, wsclient.OnConnect(func(conn *websocket.Conn) error {
+			return conn.WriteJSON(map[string]any{"op": "subscribe", "args": topics})
+		}))
+	}()
+	return out, nil
+}
