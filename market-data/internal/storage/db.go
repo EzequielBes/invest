@@ -3,7 +3,7 @@ package storage
 import (
 	"context"
 
-	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Store struct {
@@ -11,7 +11,7 @@ type Store struct {
 }
 
 func New(ctx context.Context, dsn string) (*Store, error) {
-	pool, err := pgxpool.Connect(ctx, dsn)
+	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		return nil, err
 	}
