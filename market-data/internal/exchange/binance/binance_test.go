@@ -78,3 +78,55 @@ func TestFetchOpenInterest_ParsesRealFixture(t *testing.T) {
 		t.Errorf("points[0].Value = %v", points[0].Value)
 	}
 }
+
+func TestStreamCandles_PollsRESTAndEmitsCandles(t *testing.T) {
+	c, srv := testCollector(t, "testdata/candles.json")
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	ch, err := c.StreamCandles(ctx, []string{"BTC"}, exchange.Timeframe1h)
+	if err != nil {
+		t.Fatalf("StreamCandles: %v", err)
+	}
+
+	select {
+	case candle, ok := <-ch:
+		if !ok {
+			t.Fatal("channel closed before any candle arrived")
+		}
+		if candle.Symbol != "BTC" || candle.Open != 63043.40 {
+			t.Errorf("candle = %+v", candle)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first candle from poller")
+	}
+
+	cancel()
+
+	// Drain until the channel closes to confirm ctx cancellation stops the
+	// goroutine and closes the channel, rather than leaking it.
+	closed := false
+	deadline := time.After(2 * time.Second)
+	for !closed {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				closed = true
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for channel to close after ctx cancellation")
+		}
+	}
+}
+
+func TestStreamCandles_UnsupportedTimeframe(t *testing.T) {
+	c, srv := testCollector(t, "testdata/candles.json")
+	defer srv.Close()
+
+	_, err := c.StreamCandles(context.Background(), []string{"BTC"}, exchange.Timeframe("5m"))
+	if err == nil {
+		t.Fatal("expected error for unsupported timeframe, got nil")
+	}
+}
