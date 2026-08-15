@@ -42,7 +42,11 @@ func (c *Client) Get(ctx context.Context, url string) ([]byte, error) {
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("%s: status %d: %s", url, resp.StatusCode, body)
+		errBody := body
+		if len(errBody) > 500 {
+			errBody = errBody[:500]
+		}
+		return nil, fmt.Errorf("%s: status %d: %s", url, resp.StatusCode, errBody)
 	}
 	return body, nil
 }

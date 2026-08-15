@@ -59,17 +59,32 @@ func Connect(ctx context.Context, url string, onMessage func([]byte), opts ...Op
 			}
 		}
 
-		backoff = time.Second // reset after a successful connect
+		backoff = time.Second // reset after a successful connect+subscribe
 		readLoop(ctx, conn, onMessage)
 		conn.Close()
+
+		// readLoop only returns when the connection dropped (or ctx was
+		// cancelled, handled by the ctx.Err() check at the top of the next
+		// iteration) — always back off before redialing here too.
+		if !sleep(ctx, backoff) {
+			return ctx.Err()
+		}
+		backoff = nextBackoff(backoff, maxBackoff)
 	}
 }
 
 func readLoop(ctx context.Context, conn *websocket.Conn, onMessage func([]byte)) {
-	for {
-		if ctx.Err() != nil {
-			return
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+		case <-done:
 		}
+	}()
+
+	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
 			log.Printf("wsclient: read error: %v", err)
