@@ -36,6 +36,39 @@ type envelope[T any] struct {
 	Result  T      `json:"result"`
 }
 
+type bybitKline struct {
+	Start  int64
+	Open   float64
+	High   float64
+	Low    float64
+	Close  float64
+	Volume float64
+}
+
+func (k *bybitKline) UnmarshalJSON(data []byte) error {
+	var raw []string
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if len(raw) < 6 {
+		return fmt.Errorf("bybit: unexpected kline shape, got %d fields", len(raw))
+	}
+	start, err := strconv.ParseInt(raw[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("bybit: kline start: %w", err)
+	}
+	k.Start = start
+	fields := []*float64{&k.Open, &k.High, &k.Low, &k.Close, &k.Volume}
+	for i, f := range fields {
+		v, err := strconv.ParseFloat(raw[i+1], 64)
+		if err != nil {
+			return fmt.Errorf("bybit: kline field %d: %w", i+1, err)
+		}
+		*f = v
+	}
+	return nil
+}
+
 func get[T any](ctx context.Context, c *Collector, url string) (T, error) {
 	var zero T
 	body, err := c.client.Get(ctx, url)
@@ -66,7 +99,7 @@ func (c *Collector) FetchCandles(ctx context.Context, symbol string, tf exchange
 	}
 
 	result, err := get[struct {
-		List [][]string `json:"list"`
+		List []bybitKline `json:"list"`
 	}](ctx, c, url)
 	if err != nil {
 		return nil, err
@@ -74,13 +107,10 @@ func (c *Collector) FetchCandles(ctx context.Context, symbol string, tf exchange
 
 	candles := make([]exchange.Candle, 0, len(result.List))
 	for _, row := range result.List {
-		if len(row) < 6 {
-			continue
-		}
 		candles = append(candles, exchange.Candle{
-			Symbol: symbol, Timeframe: tf, Time: parseMillis(row[0]),
-			Open: parseFloat(row[1]), High: parseFloat(row[2]), Low: parseFloat(row[3]),
-			Close: parseFloat(row[4]), Volume: parseFloat(row[5]),
+			Symbol: symbol, Timeframe: tf, Time: time.UnixMilli(row.Start),
+			Open: row.Open, High: row.High, Low: row.Low,
+			Close: row.Close, Volume: row.Volume,
 		})
 	}
 	return candles, nil
@@ -138,12 +168,3 @@ func (c *Collector) FetchOpenInterest(ctx context.Context, symbol string, from, 
 	return points, nil
 }
 
-func parseFloat(s string) float64 {
-	v, _ := strconv.ParseFloat(s, 64)
-	return v
-}
-
-func parseMillis(s string) time.Time {
-	v, _ := strconv.ParseInt(s, 10, 64)
-	return time.UnixMilli(v)
-}
