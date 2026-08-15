@@ -80,3 +80,57 @@ func TestFetchLiquidations_ParsesRealFixture(t *testing.T) {
 		t.Errorf("liqs[0] = %+v", liqs[0])
 	}
 }
+
+// TestPollLiquidationsOnce_DedupsAcrossCycles drives StreamLiquidations'
+// polling logic directly (bypassing the real 30s ticker, per the task's
+// testing note) against a fixture that returns the same two liquidations on
+// every poll, and confirms each liquidation is only forwarded once even
+// though pollLiquidationsOnce is invoked twice with a shared seen map — the
+// same dedup behavior StreamLiquidations relies on to avoid re-emitting a
+// liquidation seen on a prior poll cycle.
+func TestPollLiquidationsOnce_DedupsAcrossCycles(t *testing.T) {
+	c, srv := testCollector(t, "testdata/liquidations.json")
+	defer srv.Close()
+
+	out := make(chan exchange.Liquidation, 10)
+	seen := map[string]bool{}
+	ctx := context.Background()
+
+	c.pollLiquidationsOnce(ctx, []string{"BTC"}, seen, out)
+	c.pollLiquidationsOnce(ctx, []string{"BTC"}, seen, out)
+	close(out)
+
+	var got []exchange.Liquidation
+	for l := range out {
+		got = append(got, l)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2 (fixture's 2 liquidations forwarded once each, not duplicated across the 2 poll cycles)", len(got))
+	}
+	if got[0].Price != 63064.9 || got[1].Price != 63060 {
+		t.Errorf("got = %+v", got)
+	}
+}
+
+// TestLiquidationKey_DistinguishesFieldsAndIsStable confirms liquidationKey
+// treats two liquidations differing in any of symbol/time/price/quantity as
+// distinct, and produces the identical key for identical liquidations (the
+// property pollLiquidationsOnce's dedup relies on).
+func TestLiquidationKey_DistinguishesFieldsAndIsStable(t *testing.T) {
+	base := exchange.Liquidation{Symbol: "BTC", Time: time.UnixMilli(1786810247378), Price: 63064.9, Quantity: 2.41}
+	if liquidationKey(base) != liquidationKey(base) {
+		t.Error("liquidationKey should be stable for identical liquidations")
+	}
+
+	variants := []exchange.Liquidation{
+		{Symbol: "ETH", Time: base.Time, Price: base.Price, Quantity: base.Quantity},
+		{Symbol: base.Symbol, Time: time.UnixMilli(1786810247379), Price: base.Price, Quantity: base.Quantity},
+		{Symbol: base.Symbol, Time: base.Time, Price: 1, Quantity: base.Quantity},
+		{Symbol: base.Symbol, Time: base.Time, Price: base.Price, Quantity: 1},
+	}
+	for _, v := range variants {
+		if liquidationKey(v) == liquidationKey(base) {
+			t.Errorf("liquidationKey(%+v) collided with base key", v)
+		}
+	}
+}
