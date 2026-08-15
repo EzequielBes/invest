@@ -66,3 +66,53 @@ func TestStartAndFinishRun(t *testing.T) {
 		t.Fatalf("FinishRun: %v", err)
 	}
 }
+
+func TestInsertFundingAndOpenInterest(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 8, 15, 8, 0, 0, 0, time.UTC)
+
+	err := s.InsertFunding(ctx, "test-exchange", "BTC", []exchange.FundingRate{{Symbol: "BTC", Time: ts, Rate: 0.0001}})
+	if err != nil {
+		t.Fatalf("InsertFunding: %v", err)
+	}
+	err = s.InsertOpenInterest(ctx, "test-exchange", "BTC", []exchange.OpenInterest{{Symbol: "BTC", Time: ts, Value: 12345.6}})
+	if err != nil {
+		t.Fatalf("InsertOpenInterest: %v", err)
+	}
+}
+
+func TestInsertLiquidations(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 8, 15, 8, 0, 0, 0, time.UTC)
+
+	err := s.InsertLiquidations(ctx, "test-exchange", []exchange.Liquidation{
+		{Symbol: "BTC", Time: ts, Side: exchange.LiquidationSell, Price: 63000, Quantity: 0.5},
+	})
+	if err != nil {
+		t.Fatalf("InsertLiquidations: %v", err)
+	}
+}
+
+func TestInsertNewsItem_DedupesByURL(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	url := "https://example.com/test-article-dedup"
+
+	inserted, err := s.InsertNewsItem(ctx, "test-source", "Title", "Body", url, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("first insert: %v", err)
+	}
+	if !inserted {
+		t.Fatal("first insert: expected inserted=true")
+	}
+
+	inserted, err = s.InsertNewsItem(ctx, "test-source", "Title", "Body", url, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("duplicate insert: %v", err)
+	}
+	if inserted {
+		t.Fatal("duplicate insert: expected inserted=false")
+	}
+}
