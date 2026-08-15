@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -98,7 +99,7 @@ func TestInsertLiquidations(t *testing.T) {
 func TestInsertNewsItem_DedupesByURL(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
-	url := "https://example.com/test-article-dedup"
+	url := fmt.Sprintf("https://example.com/test-article-dedup-%d", time.Now().UnixNano())
 
 	inserted, err := s.InsertNewsItem(ctx, "test-source", "Title", "Body", url, time.Now().UTC())
 	if err != nil {
