@@ -175,6 +175,14 @@ var pollInterval = map[exchange.Timeframe]time.Duration{
 	exchange.Timeframe1d: 30 * time.Minute,
 }
 
+// candleWidth maps a timeframe to the duration of one of its candles, used
+// as a floor on the poll lookback window below.
+var candleWidth = map[exchange.Timeframe]time.Duration{
+	exchange.Timeframe1m: time.Minute,
+	exchange.Timeframe1h: time.Hour,
+	exchange.Timeframe1d: 24 * time.Hour,
+}
+
 // StreamCandles polls the Binance futures REST klines endpoint on a timer
 // rather than streaming over WebSocket.
 //
@@ -193,7 +201,14 @@ func (c *Collector) StreamCandles(ctx context.Context, symbols []string, tf exch
 		return nil, fmt.Errorf("binance: unsupported timeframe %q", tf)
 	}
 	interval := pollInterval[tf]
+	// A few poll intervals' worth, but never less than a couple of candle
+	// widths — for coarser timeframes 3x the poll interval alone would be
+	// shorter than even one candle, which would let an outage silently
+	// skip a bar instead of self-healing on the next successful poll.
 	lookback := 3 * interval
+	if floor := 2 * candleWidth[tf]; lookback < floor {
+		lookback = floor
+	}
 
 	out := make(chan exchange.Candle)
 	go func() {
