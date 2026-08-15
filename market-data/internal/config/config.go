@@ -24,7 +24,7 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")
 	}
 
-	assets := defaultAssets
+	assets := append([]string(nil), defaultAssets...)
 	if raw := os.Getenv("ASSETS"); raw != "" {
 		parts := strings.Split(raw, ",")
 		assets = make([]string, 0, len(parts))
