@@ -44,3 +44,23 @@ func (s *Store) LatestCandleTime(ctx context.Context, ex, symbol string, tf exch
 	}
 	return ts, true, nil
 }
+
+// EarliestCandleTime returns the timestamp of the oldest stored candle for
+// exchange/symbol/timeframe, used by Backfill (Part B of C3) to detect
+// whether a pair's history already reaches back close to the target depth,
+// so a restart doesn't discard prior backfill progress and start over.
+func (s *Store) EarliestCandleTime(ctx context.Context, ex, symbol string, tf exchange.Timeframe) (time.Time, bool, error) {
+	var ts time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT ts FROM candles
+		WHERE exchange = $1 AND symbol = $2 AND timeframe = $3
+		ORDER BY ts ASC LIMIT 1
+	`, ex, symbol, string(tf)).Scan(&ts)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return time.Time{}, false, nil
+		}
+		return time.Time{}, false, err
+	}
+	return ts, true, nil
+}

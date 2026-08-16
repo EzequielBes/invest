@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
 	"market-data/internal/exchange"
@@ -13,6 +14,7 @@ import (
 // database (see backfill_test.go's recordingStore).
 type candleStore interface {
 	InsertCandles(ctx context.Context, exchangeName, symbol string, candles []exchange.Candle) error
+	EarliestCandleTime(ctx context.Context, exchangeName, symbol string, tf exchange.Timeframe) (time.Time, bool, error)
 }
 
 type fundingStore interface {
@@ -116,44 +118,118 @@ func pageWindowFor(tf exchange.Timeframe) time.Duration {
 	}
 }
 
+// maxOpenInterestBackfillDepth caps how far back open-interest backfill
+// reaches, regardless of the overall backfill depth: Binance's
+// futures/data/openInterestHist rejects any startTime older than ~30 days
+// with a 400 ("parameter 'startTime' is invalid.", code -1130) — confirmed
+// live. None of the three exchanges retain OI history anywhere near the
+// ~1.5yr candle depth in practice, and the spec doesn't mandate full-depth OI
+// history (candles are the primary requirement), so one conservative,
+// exchange-agnostic window is used instead of per-exchange retention logic.
+const maxOpenInterestBackfillDepth = 25 * 24 * time.Hour
+
+// backfillCoverageTolerance is how close a pair's earliest stored 1d candle
+// must be to the target `from` boundary to be treated as "already
+// backfilled," letting a restart skip re-running the rate-limited candle
+// backfill loop instead of discarding all prior progress.
+const backfillCoverageTolerance = 48 * time.Hour
+
 // Backfill runs historical backfill for every asset across every collector
 // and timeframe, going back `depth` from now. Each asset/collector pair gets
-// its own collector_runs row so failures are attributable.
+// its own collector_runs row so failures are attributable. Collectors run
+// concurrently — each has its own independent rate limiter and hits a
+// different exchange's API, so there's no reason to serialize them, and
+// serializing them was the root cause of Bybit/OKX effectively never
+// starting their backfill behind Binance's ~10 hour run. Errors are logged
+// per-pair inside backfillCollector rather than aggregated/returned, since
+// one collector's failure shouldn't abort the others.
 func Backfill(ctx context.Context, cs candleStore, fs fundingStore, rs runStore, collectors []exchange.Collector, assets []string, depth time.Duration) error {
 	to := time.Now().UTC()
 	from := to.Add(-depth)
 	timeframes := []exchange.Timeframe{exchange.Timeframe1m, exchange.Timeframe1h, exchange.Timeframe1d}
 
+	var wg sync.WaitGroup
 	for _, c := range collectors {
-		for _, symbol := range assets {
-			runID, err := rs.StartRun(ctx, c.Name(), symbol)
-			if err != nil {
-				log.Printf("backfill %s/%s: StartRun failed: %v", c.Name(), symbol, err)
-				continue
-			}
-			var runErr error
+		c := c
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			backfillCollector(ctx, cs, fs, rs, c, assets, from, to, timeframes)
+		}()
+	}
+	wg.Wait()
+	return nil
+}
+
+// backfillCollector runs the full backfill sequence (candles across all
+// timeframes unless already covered, then funding, then open interest) for
+// every asset of a single collector, sequentially per-asset — the same
+// per-asset body Backfill used to run directly in its outer loop, just
+// factored out so Backfill can fan out one of these per collector
+// concurrently via goroutines.
+func backfillCollector(ctx context.Context, cs candleStore, fs fundingStore, rs runStore, c exchange.Collector, assets []string, from, to time.Time, timeframes []exchange.Timeframe) {
+	oiFrom := from
+	if to.Sub(from) > maxOpenInterestBackfillDepth {
+		oiFrom = to.Add(-maxOpenInterestBackfillDepth)
+	}
+
+	for _, symbol := range assets {
+		runID, err := rs.StartRun(ctx, c.Name(), symbol)
+		if err != nil {
+			log.Printf("backfill %s/%s: StartRun failed: %v", c.Name(), symbol, err)
+			continue
+		}
+		var runErr error
+
+		if alreadyCovered(ctx, cs, c.Name(), symbol, from) {
+			log.Printf("backfill %s/%s: candle history already reaches back to ~%s, skipping candle backfill", c.Name(), symbol, from.Format(time.RFC3339))
+		} else {
 			for _, tf := range timeframes {
 				if err := backfillCandles(ctx, cs, c, symbol, tf, from, to, pageWindowFor(tf)); err != nil {
 					log.Printf("backfill %s/%s/%s: %v", c.Name(), symbol, tf, err)
 					runErr = err
 				}
 			}
-			if err := backfillFunding(ctx, fs, c, symbol, from, to); err != nil {
-				log.Printf("backfill %s/%s/funding: %v", c.Name(), symbol, err)
-				runErr = err
-			}
-			if err := backfillOpenInterest(ctx, fs, c, symbol, from, to); err != nil {
-				log.Printf("backfill %s/%s/openinterest: %v", c.Name(), symbol, err)
-				runErr = err
-			}
-			status := "success"
-			if runErr != nil {
-				status = "failed"
-			}
-			if err := rs.FinishRun(ctx, runID, status, runErr); err != nil {
-				log.Printf("backfill %s/%s: FinishRun failed: %v", c.Name(), symbol, err)
-			}
+		}
+
+		// Funding/OI backfill run regardless of the candle-coverage skip
+		// above — they're cheap and idempotent via upsert, no need to gate
+		// them behind the same check.
+		if err := backfillFunding(ctx, fs, c, symbol, from, to); err != nil {
+			log.Printf("backfill %s/%s/funding: %v", c.Name(), symbol, err)
+			runErr = err
+		}
+		if err := backfillOpenInterest(ctx, fs, c, symbol, oiFrom, to); err != nil {
+			log.Printf("backfill %s/%s/openinterest: %v", c.Name(), symbol, err)
+			runErr = err
+		}
+
+		status := "success"
+		if runErr != nil {
+			status = "failed"
+		}
+		if err := rs.FinishRun(ctx, runID, status, runErr); err != nil {
+			log.Printf("backfill %s/%s: FinishRun failed: %v", c.Name(), symbol, err)
 		}
 	}
-	return nil
+}
+
+// alreadyCovered reports whether symbol's stored 1d candle history for
+// collector c already reaches back to within backfillCoverageTolerance of
+// from, meaning a prior backfill run already covered this pair and the
+// (rate-limited, potentially hours-long) candle backfill loop can be safely
+// skipped this run. Only 1d is checked — it's the cheapest to look up, and
+// backfillCandles always processes all three timeframes together for a pair,
+// so if 1d reaches back far enough, 1m and 1h were backfilled in that same
+// earlier run.
+func alreadyCovered(ctx context.Context, cs candleStore, collectorName, symbol string, from time.Time) bool {
+	earliest, found, err := cs.EarliestCandleTime(ctx, collectorName, symbol, exchange.Timeframe1d)
+	if err != nil {
+		log.Printf("backfill %s/%s: EarliestCandleTime check failed: %v (proceeding with full candle backfill)", collectorName, symbol, err)
+		return false
+	}
+	if !found {
+		return false
+	}
+	return !earliest.After(from.Add(backfillCoverageTolerance))
 }

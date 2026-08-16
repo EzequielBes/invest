@@ -52,6 +52,45 @@ func TestInsertAndLatestCandleTime(t *testing.T) {
 	}
 }
 
+func TestEarliestCandleTime(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	early := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	late := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	candles := []exchange.Candle{
+		{Symbol: "ETH", Timeframe: exchange.Timeframe1d, Time: late, Open: 1, High: 1, Low: 1, Close: 1, Volume: 1},
+		{Symbol: "ETH", Timeframe: exchange.Timeframe1d, Time: early, Open: 1, High: 1, Low: 1, Close: 1, Volume: 1},
+	}
+	if err := s.InsertCandles(ctx, "test-exchange", "ETH", candles); err != nil {
+		t.Fatalf("InsertCandles: %v", err)
+	}
+
+	earliest, ok, err := s.EarliestCandleTime(ctx, "test-exchange", "ETH", exchange.Timeframe1d)
+	if err != nil {
+		t.Fatalf("EarliestCandleTime: %v", err)
+	}
+	if !ok {
+		t.Fatal("EarliestCandleTime: expected ok=true")
+	}
+	if !earliest.Equal(early) {
+		t.Errorf("earliest = %v, want %v", earliest, early)
+	}
+}
+
+func TestEarliestCandleTime_NoData(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	_, ok, err := s.EarliestCandleTime(ctx, "test-exchange", "NOPE", exchange.Timeframe1d)
+	if err != nil {
+		t.Fatalf("EarliestCandleTime: %v", err)
+	}
+	if ok {
+		t.Error("EarliestCandleTime: expected ok=false for symbol with no candles")
+	}
+}
+
 func TestStartAndFinishRun(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -88,11 +127,21 @@ func TestInsertLiquidations(t *testing.T) {
 	ctx := context.Background()
 	ts := time.Date(2026, 8, 15, 8, 0, 0, 0, time.UTC)
 
-	err := s.InsertLiquidations(ctx, "test-exchange", []exchange.Liquidation{
+	liqs := []exchange.Liquidation{
 		{Symbol: "BTC", Time: ts, Side: exchange.LiquidationSell, Price: 63000, Quantity: 0.5},
-	})
+	}
+	err := s.InsertLiquidations(ctx, "test-exchange", liqs)
 	if err != nil {
 		t.Fatalf("InsertLiquidations: %v", err)
+	}
+
+	// Inserting the exact same liquidation again must be a silent no-op
+	// (ON CONFLICT DO NOTHING against the natural-key unique constraint from
+	// migration 002), not an error — this is what lets StreamLiquidations'
+	// per-process-restart re-ingestion of trailing fills be deduped at the
+	// DB layer instead of only via the in-memory seen map.
+	if err := s.InsertLiquidations(ctx, "test-exchange", liqs); err != nil {
+		t.Fatalf("InsertLiquidations (duplicate): %v", err)
 	}
 }
 
