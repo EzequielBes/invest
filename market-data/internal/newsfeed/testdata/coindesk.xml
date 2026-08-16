@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:content="http://purl.org/rss/1.0/modules/content/" version="2.0">
+  <channel>
+    <title>CoinDesk: Bitcoin, Ethereum, Crypto News and Price Data</title>
+    <item>
+      <title><![CDATA[Robot maker Unitree is going public. Hyperliquid traders see 4x upside from IPO price]]></title>
+      <link>https://www.coindesk.com/markets/2026/08/15/robot-maker-unitree-is-going-public</link>
+      <guid isPermaLink="false">bfe74cb5-052f-4948-9630-938954a03935</guid>
+      <pubDate>Sat, 15 Aug 2026 16:00:00 +0000</pubDate>
+      <description><![CDATA[Hyperliquid traders value Unitree at nearly $38 billion.]]></description>
+    </item>
+    <item>
+      <title><![CDATA[Swiss mega-bank UBS ramps up its Bitcoin exposure]]></title>
+      <link>https://www.coindesk.com/business/2026/08/15/swiss-mega-bank-ubs-ramps-up-bitcoin-exposure</link>
+      <guid isPermaLink="false">a1b2c3d4-052f-4948-9630-938954a03936</guid>
+      <pubDate>Sat, 15 Aug 2026 15:10:00 +0000</pubDate>
+      <description><![CDATA[UBS increased Bitcoin ETF call option exposure 24-fold.]]></description>
+    </item>
+  </channel>
+</rss>
