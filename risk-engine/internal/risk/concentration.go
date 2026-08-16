@@ -13,7 +13,7 @@ func checkAssetConcentration(portfolio PortfolioState, proposed ProposedOperatio
 		total += p.Value
 	}
 	if total <= 0 {
-		return RuleResult{Rule: "asset_concentration", Passed: true, Detail: "no portfolio value to evaluate"}
+		return RuleResult{Rule: "asset_concentration", Passed: true, Limit: maxPct, Detail: "no portfolio value to evaluate"}
 	}
 
 	assetAfter := portfolio.Positions[proposed.Asset].Value
@@ -45,7 +45,7 @@ func checkCryptoTotalConcentration(portfolio PortfolioState, proposed ProposedOp
 		crypto += p.Value
 	}
 	if total <= 0 {
-		return RuleResult{Rule: "crypto_total_concentration", Passed: true, Detail: "no portfolio value to evaluate"}
+		return RuleResult{Rule: "crypto_total_concentration", Passed: true, Limit: maxPct, Detail: "no portfolio value to evaluate"}
 	}
 
 	if proposed.Side == SideBuy {
