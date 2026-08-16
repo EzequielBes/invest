@@ -1,4 +1,12 @@
 // risk-engine/internal/storage/limits_test.go
+//
+// NOTE: These tests mutate the shared singleton row risk_limits (id=1) in
+// the real database, the same row internal/risk's evaluate_test.go reads
+// limits from. Tests within this package run sequentially by default, so
+// `go test ./internal/storage` alone is safe. But running the full module's
+// test suite MUST use `go test -p 1 ./...` — otherwise Go may run this
+// package's test binary concurrently with internal/risk's, racing these
+// rows across packages.
 package storage
 
 import (

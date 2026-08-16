@@ -60,20 +60,31 @@ func TestLatestCandle_NotFound(t *testing.T) {
 func TestRecentCandles_OldestFirst(t *testing.T) {
 	s := testStore(t)
 	now := time.Now().UTC().Truncate(time.Minute)
+	// Seed 5 candles but request only the most recent 3 (n=3 < 5 seeded), so
+	// the LIMIT actually truncates. This distinguishes the correct
+	// implementation (most recent n, oldest-first among themselves) from a
+	// naive `ORDER BY ts ASC LIMIT n` which would wrongly return the OLDEST
+	// n instead.
 	seedCandles(t, s, "test-exchange", "TESTCOIN2", []Candle{
-		{Time: now.Add(-3 * time.Minute), Close: 100, Volume: 1},
-		{Time: now.Add(-2 * time.Minute), Close: 101, Volume: 2},
-		{Time: now.Add(-1 * time.Minute), Close: 102, Volume: 3},
+		{Time: now.Add(-5 * time.Minute), Close: 100, Volume: 1},
+		{Time: now.Add(-4 * time.Minute), Close: 101, Volume: 2},
+		{Time: now.Add(-3 * time.Minute), Close: 102, Volume: 3},
+		{Time: now.Add(-2 * time.Minute), Close: 103, Volume: 4},
+		{Time: now.Add(-1 * time.Minute), Close: 104, Volume: 5},
 	})
 
-	candles, err := s.RecentCandles(context.Background(), "test-exchange", "TESTCOIN2", 10)
+	candles, err := s.RecentCandles(context.Background(), "test-exchange", "TESTCOIN2", 3)
 	if err != nil {
 		t.Fatalf("RecentCandles: %v", err)
 	}
 	if len(candles) != 3 {
 		t.Fatalf("len(candles) = %d, want 3", len(candles))
 	}
-	if candles[0].Close != 100 || candles[2].Close != 102 {
-		t.Errorf("candles not oldest-first: %+v", candles)
+	want := []float64{102, 103, 104}
+	for i, w := range want {
+		if candles[i].Close != w {
+			t.Errorf("candles[%d].Close = %v, want %v (most recent 3, oldest-first): got %+v", i, candles[i].Close, w, candles)
+			break
+		}
 	}
 }
