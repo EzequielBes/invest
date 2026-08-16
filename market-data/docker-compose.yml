@@ -30,6 +30,28 @@ services:
         condition: service_healthy
     command: ["sleep", "infinity"]
 
+  # Runs the service continuously (spec's first completion criterion: "the
+  # service runs continuously on the local machine"). Kept separate from the
+  # `go` dev-shell service above (which stays a plain sleep-infinity shell
+  # for running tests/builds) so this one can carry `restart: unless-stopped`
+  # and actually supervise the process. Intentionally simple — `go run`
+  # against the mounted source, no multi-stage Dockerfile/binary build — this
+  # is a personal, locally-run service; a production Dockerfile can be added
+  # later if ever needed.
+  market-data:
+    image: golang:1.22
+    working_dir: /app
+    volumes:
+      - .:/app
+      - go-mod-cache:/go/pkg/mod
+    environment:
+      DATABASE_URL: postgres://marketdata:marketdata@timescaledb:5432/marketdata?sslmode=disable
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    command: ["go", "run", "./cmd/market-data"]
+    restart: unless-stopped
+
 volumes:
   timescale-data:
   go-mod-cache:
