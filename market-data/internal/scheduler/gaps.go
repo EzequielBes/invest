@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"log"
 	"time"
 
 	"market-data/internal/exchange"
@@ -30,6 +31,13 @@ func timeframeDuration(tf exchange.Timeframe) time.Duration {
 // the service was down and missed live updates — and backfills the missing
 // window. Assets with no prior data are left to the initial Backfill (Task
 // 14); this only recovers gaps in existing history.
+//
+// A failure for one collector/asset/timeframe is logged and does not abort
+// recovery for the rest: RecoverGaps runs on the startup critical path and
+// (as of I2) on a recurring 15-minute ticker, so a single transient error
+// (e.g. a rate-limit blip) must not skip recovery for every other
+// asset/exchange/timeframe combination — mirroring how Backfill already
+// handles per-pair errors.
 func RecoverGaps(ctx context.Context, store latestCandleStore, collectors []exchange.Collector, assets []string) error {
 	now := time.Now().UTC()
 	timeframes := []exchange.Timeframe{exchange.Timeframe1m, exchange.Timeframe1h, exchange.Timeframe1d}
@@ -39,7 +47,8 @@ func RecoverGaps(ctx context.Context, store latestCandleStore, collectors []exch
 			for _, tf := range timeframes {
 				latest, found, err := store.LatestCandleTime(ctx, c.Name(), symbol, tf)
 				if err != nil {
-					return err
+					log.Printf("gap recovery %s/%s/%s: LatestCandleTime failed: %v", c.Name(), symbol, tf, err)
+					continue
 				}
 				if !found {
 					continue
@@ -48,7 +57,8 @@ func RecoverGaps(ctx context.Context, store latestCandleStore, collectors []exch
 					continue // up to date, nothing to recover
 				}
 				if err := backfillCandles(ctx, store, c, symbol, tf, latest, now, pageWindowFor(tf)); err != nil {
-					return err
+					log.Printf("gap recovery %s/%s/%s: %v", c.Name(), symbol, tf, err)
+					continue
 				}
 			}
 		}
