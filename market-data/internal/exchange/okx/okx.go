@@ -28,6 +28,13 @@ func New(client *httpclient.Client) *Collector {
 
 func (c *Collector) Name() string { return "okx" }
 
+// okxPingPayload is OKX's documented WS keepalive ping
+// (https://www.okx.com/docs-v5/en/#overview-websocket-overview): the
+// literal text string "ping" (not JSON, not a protocol-level ping frame);
+// OKX replies with the literal text "pong" as a normal message rather than
+// a protocol pong, and closes idle connections after ~30s of silence.
+var okxPingPayload = []byte("ping")
+
 func instID(symbol string) string { return symbol + "-USDT-SWAP" }
 
 var timeframeCode = map[exchange.Timeframe]string{
@@ -99,7 +106,13 @@ func (c *Collector) FetchCandles(ctx context.Context, symbol string, tf exchange
 	if !ok {
 		return nil, fmt.Errorf("okx: unsupported timeframe %q", tf)
 	}
-	url := fmt.Sprintf("%s/api/v5/market/candles?instId=%s&bar=%s&limit=300", c.baseURL, instID(symbol), code)
+	// history-candles (not candles) is used here deliberately: candles only
+	// serves the most recent ~1440 bars regardless of before/after params, so
+	// using it would make backfill/gap-recovery silently return only recent
+	// data instead of the requested historical window. Live-verified: a
+	// before= far in the past against /market/candles returns today's bars.
+	// history-candles returns the same JSON shape, just with real history.
+	url := fmt.Sprintf("%s/api/v5/market/history-candles?instId=%s&bar=%s&limit=300", c.baseURL, instID(symbol), code)
 	if !to.IsZero() {
 		url += fmt.Sprintf("&after=%d", to.UnixMilli())
 	}
@@ -290,7 +303,7 @@ func (c *Collector) StreamCandles(ctx context.Context, symbols []string, tf exch
 			}
 		}, wsclient.OnConnect(func(conn *websocket.Conn) error {
 			return conn.WriteJSON(map[string]any{"op": "subscribe", "args": args})
-		}))
+		}), wsclient.PingMessage(okxPingPayload))
 	}()
 	return out, nil
 }

@@ -28,6 +28,12 @@ func New(client *httpclient.Client) *Collector {
 
 func (c *Collector) Name() string { return "bybit" }
 
+// bybitPingPayload is Bybit's documented WS keepalive ping
+// (https://bybit-exchange.github.io/docs/v5/ws/connect#how-to-send-the-heartbeat-packet):
+// a JSON text frame, not a protocol-level ping frame; Bybit replies with
+// {"op":"pong",...} as a normal text message rather than a protocol pong.
+var bybitPingPayload = []byte(`{"op":"ping"}`)
+
 func instrument(symbol string) string { return symbol + "USDT" }
 
 var timeframeCode = map[exchange.Timeframe]string{
@@ -237,7 +243,7 @@ func (c *Collector) StreamCandles(ctx context.Context, symbols []string, tf exch
 			}
 		}, wsclient.OnConnect(func(conn *websocket.Conn) error {
 			return conn.WriteJSON(map[string]any{"op": "subscribe", "args": topics})
-		}))
+		}), wsclient.PingMessage(bybitPingPayload))
 	}()
 	return out, nil
 }
@@ -305,7 +311,7 @@ func (c *Collector) StreamLiquidations(ctx context.Context, symbols []string) (<
 			}
 		}, wsclient.OnConnect(func(conn *websocket.Conn) error {
 			return conn.WriteJSON(map[string]any{"op": "subscribe", "args": topics})
-		}))
+		}), wsclient.PingMessage(bybitPingPayload))
 	}()
 	return out, nil
 }

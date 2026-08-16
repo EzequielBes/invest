@@ -77,6 +77,27 @@ func main() {
 		log.Printf("gap recovery: %v", err)
 	}
 
+	// Also run gap recovery periodically for the life of the process, not
+	// just once at startup (I2): a WS drop that goes undetected between
+	// keepalive pings (or any other transient cause) can otherwise leave a
+	// gap that would only get healed at the next restart. RecoverGaps itself
+	// logs and continues past a single pair's failure (I3), so a failure
+	// here doesn't need to be fatal.
+	go func() {
+		ticker := time.NewTicker(15 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := scheduler.RecoverGaps(ctx, store, collectors, cfg.Assets); err != nil {
+					log.Printf("periodic gap recovery: %v", err)
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	log.Print("starting live collection")
 	scheduler.RunLive(ctx, store, store, store, collectors, cfg.Assets)
 
