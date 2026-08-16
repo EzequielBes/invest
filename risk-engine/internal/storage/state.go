@@ -25,16 +25,22 @@ func (s *Store) GetState(ctx context.Context) (State, error) {
 	return st, err
 }
 
-// SetState updates the operational state using db, which may be the
+// setState updates the operational state using db, which may be the
 // Store's pool (standalone call) or a transaction, so the state change and
 // a related risk_decisions row can commit or roll back together.
-func SetState(ctx context.Context, db querier, status, reason string) error {
+//
+// This is deliberately package-private to prevent unguarded external use:
+// an unconditional overwrite of risk_state is exactly the hazard
+// SetStateIfNormal exists to guard against. SetStateIfNormal is the safe
+// path for conditional writes; (*Store).SetState and (*Store).Reset are the
+// intentional operator-facing manual-override paths.
+func setState(ctx context.Context, db querier, status, reason string) error {
 	_, err := db.Exec(ctx, `UPDATE risk_state SET status = $1, reason = $2, changed_at = now() WHERE id = 1`, status, reason)
 	return err
 }
 
 func (s *Store) SetState(ctx context.Context, status, reason string) error {
-	return SetState(ctx, s.pool, status, reason)
+	return setState(ctx, s.pool, status, reason)
 }
 
 // SetStateIfNormal transitions status only if the current status is still
