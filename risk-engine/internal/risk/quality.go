@@ -26,8 +26,11 @@ type marketDataReader interface {
 
 func checkDataFreshness(ctx context.Context, md marketDataReader, asset string, maxAgeMinutes int) RuleResult {
 	candle, found, err := md.LatestCandle(ctx, ReferenceExchange, asset)
-	if err != nil || !found {
-		return RuleResult{Rule: "data_freshness", Passed: false, Detail: "no market data available"}
+	if err != nil {
+		return RuleResult{Rule: "data_freshness", Passed: false, Limit: float64(maxAgeMinutes), Detail: fmt.Sprintf("market data lookup failed: %v", err)}
+	}
+	if !found {
+		return RuleResult{Rule: "data_freshness", Passed: false, Limit: float64(maxAgeMinutes), Detail: "no market data available"}
 	}
 	age := time.Since(candle.Time).Minutes()
 	return RuleResult{
@@ -39,8 +42,11 @@ func checkDataFreshness(ctx context.Context, md marketDataReader, asset string, 
 
 func checkVolatility(ctx context.Context, md marketDataReader, asset string, maxVolatility float64) RuleResult {
 	candles, err := md.RecentCandles(ctx, ReferenceExchange, asset, 60)
-	if err != nil || len(candles) < 2 {
-		return RuleResult{Rule: "volatility", Passed: false, Detail: "insufficient market data"}
+	if err != nil {
+		return RuleResult{Rule: "volatility", Passed: false, Limit: maxVolatility, Detail: fmt.Sprintf("market data lookup failed: %v", err)}
+	}
+	if len(candles) < 2 {
+		return RuleResult{Rule: "volatility", Passed: false, Limit: maxVolatility, Detail: "insufficient market data"}
 	}
 	vol := stddevReturns(candles)
 	return RuleResult{
@@ -77,8 +83,11 @@ func stddevReturns(candles []storage.Candle) float64 {
 
 func checkLiquidity(ctx context.Context, md marketDataReader, asset string, minLiquidity float64) RuleResult {
 	candles, err := md.RecentCandles(ctx, ReferenceExchange, asset, 60)
-	if err != nil || len(candles) == 0 {
-		return RuleResult{Rule: "liquidity", Passed: false, Detail: "insufficient market data"}
+	if err != nil {
+		return RuleResult{Rule: "liquidity", Passed: false, Limit: minLiquidity, Detail: fmt.Sprintf("market data lookup failed: %v", err)}
+	}
+	if len(candles) == 0 {
+		return RuleResult{Rule: "liquidity", Passed: false, Limit: minLiquidity, Detail: "insufficient market data"}
 	}
 	var quoteVolume float64
 	for _, c := range candles {
