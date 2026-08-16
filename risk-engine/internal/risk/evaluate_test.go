@@ -23,6 +23,11 @@ func testEvaluateStore(t *testing.T) *storage.Store {
 	if err := s.SetState(context.Background(), storage.StatusNormal, "test setup"); err != nil {
 		t.Fatalf("reset state: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := s.SetState(context.Background(), storage.StatusNormal, "test cleanup"); err != nil {
+			t.Logf("cleanup: failed to reset state: %v", err)
+		}
+	})
 	return s
 }
 
@@ -76,5 +81,13 @@ func TestEvaluate_RejectsOnMissingMarketData(t *testing.T) {
 	}
 	if decision.Allowed {
 		t.Fatal("expected rejection: no market data exists for this asset (fail-safe)")
+	}
+
+	st, err := s.GetState(context.Background())
+	if err != nil {
+		t.Fatalf("GetState: %v", err)
+	}
+	if st.Status != storage.StatusNormal {
+		t.Fatalf("Status = %q, want %q — a quality-rule rejection must not touch operational state", st.Status, storage.StatusNormal)
 	}
 }

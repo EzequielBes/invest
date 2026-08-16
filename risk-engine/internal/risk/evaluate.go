@@ -72,11 +72,18 @@ func Evaluate(ctx context.Context, store *storage.Store, portfolio PortfolioStat
 		if err != nil {
 			return Decision{}, fmt.Errorf("risk: begin tx: %w", err)
 		}
-		defer tx.Rollback(ctx)
+		defer tx.Rollback(context.WithoutCancel(ctx))
 
 		reason := fmt.Sprintf("auto-paused: %s limit breached", lossViolated)
-		if err := storage.SetState(ctx, tx, storage.StatusPaused, reason); err != nil {
+		applied, err := storage.SetStateIfNormal(ctx, tx, storage.StatusPaused, reason)
+		if err != nil {
 			return Decision{}, fmt.Errorf("risk: set state: %w", err)
+		}
+		if !applied {
+			// State already changed (e.g. to kill_switch) since our initial
+			// read — don't downgrade it. The operation is still rejected
+			// for the loss breach either way; just record the decision
+			// without touching state.
 		}
 		if err := storage.RecordDecision(ctx, tx, toRecord(proposed, d)); err != nil {
 			return Decision{}, fmt.Errorf("risk: record decision: %w", err)
@@ -98,8 +105,12 @@ func toRecord(proposed ProposedOperation, d Decision) storage.DecisionRecord {
 	for i, r := range d.RulesChecked {
 		rules[i] = storage.RuleResultRecord{Rule: r.Rule, Passed: r.Passed, Measured: r.Measured, Limit: r.Limit, Detail: r.Detail}
 	}
+	reasons := d.Reasons
+	if reasons == nil {
+		reasons = []string{}
+	}
 	return storage.DecisionRecord{
 		Asset: proposed.Asset, Side: string(proposed.Side), Quantity: proposed.Quantity, Value: proposed.Value,
-		Allowed: d.Allowed, Reasons: d.Reasons, RulesChecked: rules,
+		Allowed: d.Allowed, Reasons: reasons, RulesChecked: rules,
 	}
 }
