@@ -29,6 +29,14 @@ func TestGetAndSetLimits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetLimits: %v", err)
 	}
+	// Register cleanup immediately after capturing original, so restore runs
+	// regardless of how the rest of the test exits (even if t.Fatalf is called)
+	t.Cleanup(func() {
+		if err := s.SetLimits(context.Background(), original); err != nil {
+			t.Logf("cleanup: failed to restore original limits: %v", err)
+		}
+	})
+
 	if original.MaxPctPerAsset <= 0 {
 		t.Fatalf("expected a seeded MaxPctPerAsset > 0, got %v", original.MaxPctPerAsset)
 	}
@@ -45,10 +53,5 @@ func TestGetAndSetLimits(t *testing.T) {
 	}
 	if got.MaxValuePerTrade != 12345 {
 		t.Errorf("MaxValuePerTrade = %v, want 12345", got.MaxValuePerTrade)
-	}
-
-	// restore original so the seeded fixture isn't permanently mutated for other tests/runs
-	if err := s.SetLimits(ctx, original); err != nil {
-		t.Fatalf("SetLimits (restore): %v", err)
 	}
 }
