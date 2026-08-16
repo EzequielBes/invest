@@ -11,11 +11,11 @@ import (
 
 // fakeMarketData lets quality rule tests run without a database.
 type fakeMarketData struct {
-	latest       storage.Candle
-	latestFound  bool
-	latestErr    error
-	recent       []storage.Candle
-	recentErr    error
+	latest      storage.Candle
+	latestFound bool
+	latestErr   error
+	recent      []storage.Candle
+	recentErr   error
 }
 
 func (f *fakeMarketData) LatestCandle(ctx context.Context, exchange, symbol string) (storage.Candle, bool, error) {
