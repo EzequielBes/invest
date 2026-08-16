@@ -1,4 +1,4 @@
-// risk-engine/internal/risk/quality_test.go
+// risk-engine/risk/quality_test.go
 package risk
 
 import (
@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"risk-engine/internal/storage"
+	"risk-engine/storage"
 )
 
 // fakeMarketData lets quality rule tests run without a database.

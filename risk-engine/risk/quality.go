@@ -1,4 +1,4 @@
-// risk-engine/internal/risk/quality.go
+// risk-engine/risk/quality.go
 package risk
 
 import (
@@ -7,7 +7,7 @@ import (
 	"math"
 	"time"
 
-	"risk-engine/internal/storage"
+	"risk-engine/storage"
 )
 
 // ReferenceExchange is which exchange's market data quality rules are

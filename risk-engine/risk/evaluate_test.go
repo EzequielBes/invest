@@ -1,13 +1,12 @@
-// risk-engine/internal/risk/evaluate_test.go
+// risk-engine/risk/evaluate_test.go
 //
 // NOTE: These tests mutate shared singleton rows (risk_state, risk_limits;
-// both id=1) in the real database, the same rows internal/storage's tests
-// mutate. Tests within this package run sequentially by default, so `go
-// test ./internal/risk` alone is safe. But running the full module's test
-// suite MUST use `go test -p 1 ./...` — otherwise Go may run this package's
-// test binary concurrently with internal/storage's, racing writes to the
-// same rows. See internal/storage/limits_test.go and state_test.go for the
-// matching note.
+// both id=1) in the real database, the same rows storage's tests mutate.
+// Tests within this package run sequentially by default, so `go test
+// ./risk` alone is safe. But running the full module's test suite MUST use
+// `go test -p 1 ./...` — otherwise Go may run this package's test binary
+// concurrently with storage's, racing writes to the same rows. See
+// storage/limits_test.go and state_test.go for the matching note.
 package risk
 
 import (
@@ -16,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"risk-engine/internal/storage"
 	"risk-engine/internal/storagetest"
+	"risk-engine/storage"
 )
 
 func testEvaluateStore(t *testing.T) *storage.Store {

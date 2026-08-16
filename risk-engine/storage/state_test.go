@@ -1,12 +1,12 @@
-// risk-engine/internal/storage/state_test.go
+// risk-engine/storage/state_test.go
 //
 // NOTE: These tests mutate the shared singleton row risk_state (id=1) in
-// the real database, the same row internal/risk's evaluate_test.go reads
-// and writes state through. Tests within this package run sequentially by
-// default, so `go test ./internal/storage` alone is safe. But running the
-// full module's test suite MUST use `go test -p 1 ./...` — otherwise Go may
-// run this package's test binary concurrently with internal/risk's, racing
-// this row across packages.
+// the real database, the same row risk's evaluate_test.go reads and
+// writes state through. Tests within this package run sequentially by
+// default, so `go test ./storage` alone is safe. But running the full
+// module's test suite MUST use `go test -p 1 ./...` — otherwise Go may run
+// this package's test binary concurrently with risk's, racing this row
+// across packages.
 package storage
 
 import (

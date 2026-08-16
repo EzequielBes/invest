@@ -1,11 +1,11 @@
-// risk-engine/internal/risk/evaluate.go
+// risk-engine/risk/evaluate.go
 package risk
 
 import (
 	"context"
 	"fmt"
 
-	"risk-engine/internal/storage"
+	"risk-engine/storage"
 )
 
 // Evaluate is the risk engine's entry point: given the caller-supplied

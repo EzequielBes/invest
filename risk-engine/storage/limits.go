@@ -1,4 +1,4 @@
-// risk-engine/internal/storage/limits.go
+// risk-engine/storage/limits.go
 package storage
 
 import "context"
