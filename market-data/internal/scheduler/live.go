@@ -61,16 +61,24 @@ func pollFundingAndOI(ctx context.Context, fs fundingStore, c exchange.Collector
 	defer ticker.Stop()
 
 	poll := func() {
-		since := time.Now().UTC().Add(-1 * time.Hour)
+		now := time.Now().UTC()
+		since := now.Add(-1 * time.Hour)
 		for _, symbol := range assets {
-			if rates, err := c.FetchFunding(ctx, symbol, since, time.Time{}); err != nil {
+			// An explicit `to` (rather than a zero time.Time, which each
+			// collector treats as "omit the end-time param") is required
+			// here: Bybit's funding-history endpoint returns "params error:
+			// Time Is Invalid" when startTime is set but endTime is
+			// omitted. Binance and OKX tolerate an explicit end time fine
+			// too, and Backfill already always passes a concrete `to` to
+			// these same methods, so this is the well-trodden path.
+			if rates, err := c.FetchFunding(ctx, symbol, since, now); err != nil {
 				log.Printf("live: %s FetchFunding(%s): %v", c.Name(), symbol, err)
 			} else if len(rates) > 0 {
 				if err := fs.InsertFunding(ctx, c.Name(), symbol, rates); err != nil {
 					log.Printf("live: %s insert funding: %v", c.Name(), err)
 				}
 			}
-			if points, err := c.FetchOpenInterest(ctx, symbol, since, time.Time{}); err != nil {
+			if points, err := c.FetchOpenInterest(ctx, symbol, since, now); err != nil {
 				log.Printf("live: %s FetchOpenInterest(%s): %v", c.Name(), symbol, err)
 			} else if len(points) > 0 {
 				if err := fs.InsertOpenInterest(ctx, c.Name(), symbol, points); err != nil {

@@ -45,10 +45,22 @@ func main() {
 		okx.New(httpclient.New(5, 5)),
 	}
 
-	log.Printf("starting backfill for %d assets across %d exchanges", len(cfg.Assets), len(collectors))
-	if err := scheduler.Backfill(ctx, store, store, store, collectors, cfg.Assets, backfillDepth); err != nil {
-		log.Printf("backfill: %v", err)
-	}
+	// Backfill runs in the background rather than blocking startup: with the
+	// real ~1.5-year depth across every asset/exchange it can take hours,
+	// and live streaming + news polling shouldn't wait on it. RecoverGaps
+	// reads LatestCandleTime from the *previous* run's data and correctly
+	// no-ops for assets with none yet (that's Backfill's job), and live vs.
+	// backfilled candles both go through InsertCandles's upsert, so the two
+	// can run concurrently without a correctness issue — worst case is a
+	// redundant overwrite of the same data.
+	log.Printf("starting backfill for %d assets across %d exchanges (running in background)", len(cfg.Assets), len(collectors))
+	go func() {
+		if err := scheduler.Backfill(ctx, store, store, store, collectors, cfg.Assets, backfillDepth); err != nil {
+			log.Printf("backfill: %v", err)
+		} else {
+			log.Print("backfill complete")
+		}
+	}()
 
 	log.Print("recovering any gaps since last run")
 	if err := scheduler.RecoverGaps(ctx, store, collectors, cfg.Assets); err != nil {
