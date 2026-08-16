@@ -8,11 +8,16 @@ import (
 	"market-data/internal/exchange"
 )
 
-// candleStore and runStore are the minimal slices of storage.Store this
+// candleStore, fundingStore, and runStore are the minimal slices of storage.Store this
 // package depends on, so backfill logic can be unit-tested without a real
 // database (see backfill_test.go's recordingStore).
 type candleStore interface {
 	InsertCandles(ctx context.Context, exchangeName, symbol string, candles []exchange.Candle) error
+}
+
+type fundingStore interface {
+	InsertFunding(ctx context.Context, exchangeName, symbol string, rates []exchange.FundingRate) error
+	InsertOpenInterest(ctx context.Context, exchangeName, symbol string, points []exchange.OpenInterest) error
 }
 
 type runStore interface {
@@ -46,6 +51,54 @@ func backfillCandles(ctx context.Context, store candleStore, c exchange.Collecto
 	return nil
 }
 
+// backfillFunding walks forward from `from` to `to` in 20-day windows,
+// paginating until the collector returns no data.
+func backfillFunding(ctx context.Context, store fundingStore, c exchange.Collector, symbol string, from, to time.Time) error {
+	cursor := from
+	const window = 20 * 24 * time.Hour // conservative: keeps rows-per-call under every exchange's funding-history page limit
+	for cursor.Before(to) {
+		windowEnd := cursor.Add(window)
+		if windowEnd.After(to) {
+			windowEnd = to
+		}
+		rates, err := c.FetchFunding(ctx, symbol, cursor, windowEnd)
+		if err != nil {
+			return err
+		}
+		if len(rates) > 0 {
+			if err := store.InsertFunding(ctx, c.Name(), symbol, rates); err != nil {
+				return err
+			}
+		}
+		cursor = windowEnd
+	}
+	return nil
+}
+
+// backfillOpenInterest walks forward from `from` to `to` in 7-day windows,
+// paginating until the collector returns no data.
+func backfillOpenInterest(ctx context.Context, store fundingStore, c exchange.Collector, symbol string, from, to time.Time) error {
+	cursor := from
+	const window = 7 * 24 * time.Hour // conservative: keeps rows-per-call under every exchange's OI-history page limit
+	for cursor.Before(to) {
+		windowEnd := cursor.Add(window)
+		if windowEnd.After(to) {
+			windowEnd = to
+		}
+		points, err := c.FetchOpenInterest(ctx, symbol, cursor, windowEnd)
+		if err != nil {
+			return err
+		}
+		if len(points) > 0 {
+			if err := store.InsertOpenInterest(ctx, c.Name(), symbol, points); err != nil {
+				return err
+			}
+		}
+		cursor = windowEnd
+	}
+	return nil
+}
+
 // pageWindowFor returns a conservative page size per timeframe, well under
 // each exchange's max rows-per-call (Binance 1500, Bybit 1000, OKX 300) so a
 // single window never risks truncation regardless of which exchange is
@@ -66,7 +119,7 @@ func pageWindowFor(tf exchange.Timeframe) time.Duration {
 // Backfill runs historical backfill for every asset across every collector
 // and timeframe, going back `depth` from now. Each asset/collector pair gets
 // its own collector_runs row so failures are attributable.
-func Backfill(ctx context.Context, cs candleStore, rs runStore, collectors []exchange.Collector, assets []string, depth time.Duration) error {
+func Backfill(ctx context.Context, cs candleStore, fs fundingStore, rs runStore, collectors []exchange.Collector, assets []string, depth time.Duration) error {
 	to := time.Now().UTC()
 	from := to.Add(-depth)
 	timeframes := []exchange.Timeframe{exchange.Timeframe1m, exchange.Timeframe1h, exchange.Timeframe1d}
@@ -75,7 +128,8 @@ func Backfill(ctx context.Context, cs candleStore, rs runStore, collectors []exc
 		for _, symbol := range assets {
 			runID, err := rs.StartRun(ctx, c.Name(), symbol)
 			if err != nil {
-				return err
+				log.Printf("backfill %s/%s: StartRun failed: %v", c.Name(), symbol, err)
+				continue
 			}
 			var runErr error
 			for _, tf := range timeframes {
@@ -84,12 +138,20 @@ func Backfill(ctx context.Context, cs candleStore, rs runStore, collectors []exc
 					runErr = err
 				}
 			}
+			if err := backfillFunding(ctx, fs, c, symbol, from, to); err != nil {
+				log.Printf("backfill %s/%s/funding: %v", c.Name(), symbol, err)
+				runErr = err
+			}
+			if err := backfillOpenInterest(ctx, fs, c, symbol, from, to); err != nil {
+				log.Printf("backfill %s/%s/openinterest: %v", c.Name(), symbol, err)
+				runErr = err
+			}
 			status := "success"
 			if runErr != nil {
 				status = "failed"
 			}
 			if err := rs.FinishRun(ctx, runID, status, runErr); err != nil {
-				return err
+				log.Printf("backfill %s/%s: FinishRun failed: %v", c.Name(), symbol, err)
 			}
 		}
 	}
