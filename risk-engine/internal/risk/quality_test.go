@@ -3,6 +3,8 @@ package risk
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,6 +46,20 @@ func TestCheckDataFreshness_RejectsMissingData(t *testing.T) {
 	}
 }
 
+func TestCheckDataFreshness_RejectsOnLookupError(t *testing.T) {
+	md := &fakeMarketData{latestErr: errors.New("connection refused")}
+	result := checkDataFreshness(context.Background(), md, "BTC", 30)
+	if result.Passed {
+		t.Fatal("expected rejection when the market data lookup itself fails")
+	}
+	if result.Limit != 30 {
+		t.Errorf("Limit = %v, want 30 (the configured limit, not the zero value)", result.Limit)
+	}
+	if !strings.Contains(result.Detail, "market data lookup failed") {
+		t.Errorf("Detail = %q, want it to distinguish a lookup error from missing data", result.Detail)
+	}
+}
+
 func TestCheckDataFreshness_AllowsFreshData(t *testing.T) {
 	md := &fakeMarketData{
 		latest:      storage.Candle{Time: time.Now().UTC().Add(-5 * time.Minute)},
@@ -79,6 +95,20 @@ func TestCheckVolatility_RejectsInsufficientData(t *testing.T) {
 	}
 }
 
+func TestCheckVolatility_RejectsOnLookupError(t *testing.T) {
+	md := &fakeMarketData{recentErr: errors.New("connection refused")}
+	result := checkVolatility(context.Background(), md, "BTC", 0.5)
+	if result.Passed {
+		t.Fatal("expected rejection when the market data lookup itself fails")
+	}
+	if result.Limit != 0.5 {
+		t.Errorf("Limit = %v, want 0.5 (the configured limit, not the zero value)", result.Limit)
+	}
+	if !strings.Contains(result.Detail, "market data lookup failed") {
+		t.Errorf("Detail = %q, want it to distinguish a lookup error from insufficient data", result.Detail)
+	}
+}
+
 func TestCheckLiquidity_RejectsLowVolume(t *testing.T) {
 	base := time.Now().UTC().Add(-2 * time.Minute)
 	md := &fakeMarketData{recent: []storage.Candle{
@@ -88,6 +118,20 @@ func TestCheckLiquidity_RejectsLowVolume(t *testing.T) {
 	result := checkLiquidity(context.Background(), md, "BTC", 1000000)
 	if result.Passed {
 		t.Fatalf("expected rejection: measured liquidity %.2f should be under limit 1000000", result.Measured)
+	}
+}
+
+func TestCheckLiquidity_RejectsOnLookupError(t *testing.T) {
+	md := &fakeMarketData{recentErr: errors.New("connection refused")}
+	result := checkLiquidity(context.Background(), md, "BTC", 100000)
+	if result.Passed {
+		t.Fatal("expected rejection when the market data lookup itself fails")
+	}
+	if result.Limit != 100000 {
+		t.Errorf("Limit = %v, want 100000 (the configured limit, not the zero value)", result.Limit)
+	}
+	if !strings.Contains(result.Detail, "market data lookup failed") {
+		t.Errorf("Detail = %q, want it to distinguish a lookup error from insufficient data", result.Detail)
 	}
 }
 

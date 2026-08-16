@@ -68,6 +68,15 @@ func TestEvaluate_RejectsWhenAlreadyPaused(t *testing.T) {
 		t.Fatalf("SetState: %v", err)
 	}
 
+	// risk_decisions is append-only and shared across every test run, so an
+	// absolute count assertion after Evaluate would pass even if Evaluate
+	// wrote nothing (old rows already satisfy count > 0). Capture the count
+	// before, and assert it grew by exactly one new row after.
+	before, err := seeder.CountDecisions(ctx, "BTC", false)
+	if err != nil {
+		t.Fatalf("CountDecisions (before): %v", err)
+	}
+
 	decision, err := Evaluate(ctx, s,
 		PortfolioState{Cash: 10000},
 		ProposedOperation{Asset: "BTC", Side: SideBuy, Value: 100},
@@ -79,12 +88,12 @@ func TestEvaluate_RejectsWhenAlreadyPaused(t *testing.T) {
 		t.Fatal("expected rejection: system is paused")
 	}
 
-	count, err := seeder.CountDecisions(ctx, "BTC", false)
+	after, err := seeder.CountDecisions(ctx, "BTC", false)
 	if err != nil {
-		t.Fatalf("CountDecisions: %v", err)
+		t.Fatalf("CountDecisions (after): %v", err)
 	}
-	if count == 0 {
-		t.Fatal("expected the rejection to be recorded in risk_decisions")
+	if after != before+1 {
+		t.Fatalf("risk_decisions count for asset=\"BTC\",allowed=false = %d, want %d (before=%d) — Evaluate should have written exactly one new row", after, before+1, before)
 	}
 }
 
@@ -93,8 +102,13 @@ func TestEvaluate_AutoPausesOnLossBreach(t *testing.T) {
 	seeder := testEvaluateSeeder(t)
 	ctx := context.Background()
 
+	before, err := seeder.CountDecisions(ctx, "BTC", false)
+	if err != nil {
+		t.Fatalf("CountDecisions (before): %v", err)
+	}
+
 	portfolio := PortfolioState{Cash: 10000, DailyLoss: 0.99} // certain to breach the seeded 0.05 limit
-	_, err := Evaluate(ctx, s, portfolio,
+	_, err = Evaluate(ctx, s, portfolio,
 		ProposedOperation{Asset: "BTC", Side: SideBuy, Value: 100},
 	)
 	if err != nil {
@@ -109,12 +123,12 @@ func TestEvaluate_AutoPausesOnLossBreach(t *testing.T) {
 		t.Fatalf("Status = %q, want %q after a loss-limit breach", st.Status, storage.StatusPaused)
 	}
 
-	count, err := seeder.CountDecisions(ctx, "BTC", false)
+	after, err := seeder.CountDecisions(ctx, "BTC", false)
 	if err != nil {
-		t.Fatalf("CountDecisions: %v", err)
+		t.Fatalf("CountDecisions (after): %v", err)
 	}
-	if count == 0 {
-		t.Fatal("expected the rejection to be recorded in risk_decisions")
+	if after != before+1 {
+		t.Fatalf("risk_decisions count for asset=\"BTC\",allowed=false = %d, want %d (before=%d) — Evaluate should have written exactly one new row", after, before+1, before)
 	}
 }
 
@@ -234,12 +248,32 @@ func TestEvaluate_RejectsExcessiveTradeValue(t *testing.T) {
 	// concentration limits, isolating the max_trade_value rule.
 	proposed := ProposedOperation{Asset: asset, Side: SideBuy, Quantity: 15, Value: 1500}
 
+	before, err := seeder.CountDecisions(ctx, asset, false)
+	if err != nil {
+		t.Fatalf("CountDecisions (before): %v", err)
+	}
+
 	decision, err := Evaluate(ctx, s, portfolio, proposed)
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
 	if decision.Allowed {
 		t.Fatalf("expected rejection: value 1500 exceeds max_value_per_trade 1000, got reasons: %v", decision.Reasons)
+	}
+
+	// Confirm it's specifically the max_trade_value rule that failed, not
+	// some other rule that coincidentally also rejected — otherwise a
+	// regression that broke trade-value checking while another rule failed
+	// for an unrelated reason could slip through undetected.
+	failedTradeValueRule := false
+	for _, r := range decision.RulesChecked {
+		if r.Rule == "max_trade_value" && !r.Passed {
+			failedTradeValueRule = true
+			break
+		}
+	}
+	if !failedTradeValueRule {
+		t.Fatalf("expected max_trade_value to be among the failed rules, got RulesChecked: %+v", decision.RulesChecked)
 	}
 
 	st, err := s.GetState(ctx)
@@ -250,11 +284,11 @@ func TestEvaluate_RejectsExcessiveTradeValue(t *testing.T) {
 		t.Errorf("Status = %q, want %q — a trade-value rejection must never pause the system", st.Status, storage.StatusNormal)
 	}
 
-	count, err := seeder.CountDecisions(ctx, asset, false)
+	after, err := seeder.CountDecisions(ctx, asset, false)
 	if err != nil {
-		t.Fatalf("CountDecisions: %v", err)
+		t.Fatalf("CountDecisions (after): %v", err)
 	}
-	if count == 0 {
-		t.Fatal("expected the rejected decision to be recorded in risk_decisions")
+	if after != before+1 {
+		t.Fatalf("risk_decisions count for asset=%q,allowed=false = %d, want %d (before=%d) — Evaluate should have written exactly one new row", asset, after, before+1, before)
 	}
 }
