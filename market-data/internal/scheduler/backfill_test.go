@@ -233,16 +233,26 @@ func TestBackfill_RunsCollectorsConcurrently(t *testing.T) {
 }
 
 // TestBackfill_SkipsCandlesWhenAlreadyCovered confirms Part B of C3: when a
-// pair's earliest stored 1d candle already reaches back close to (or beyond)
-// the target depth, Backfill skips the rate-limited FetchCandles loop for
-// that pair entirely rather than discarding the prior progress and
-// re-backfilling from scratch — while funding/OI backfill (cheap and
-// idempotent) still run as normal.
+// pair's earliest stored candle for a given timeframe already reaches back
+// close to (or beyond) the target depth, Backfill skips the rate-limited
+// FetchCandles loop for that timeframe rather than discarding the prior
+// progress and re-backfilling from scratch — while funding/OI backfill
+// (cheap and idempotent) still run as normal. All three timeframes are
+// marked covered here to exercise the fully-skipped case.
 func TestBackfill_SkipsCandlesWhenAlreadyCovered(t *testing.T) {
 	fc := &fakeCollector{name: "test", maxCalls: 5, fundingMaxCalls: 1, openInterestMaxCalls: 1}
+	covered := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 	store := &recordingStore{
-		earliest:      map[string]time.Time{"test|BTC|1d": time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)},
-		earliestFound: map[string]bool{"test|BTC|1d": true},
+		earliest: map[string]time.Time{
+			"test|BTC|1m": covered,
+			"test|BTC|1h": covered,
+			"test|BTC|1d": covered,
+		},
+		earliestFound: map[string]bool{
+			"test|BTC|1m": true,
+			"test|BTC|1h": true,
+			"test|BTC|1d": true,
+		},
 	}
 	collectors := []exchange.Collector{fc}
 	assets := []string{"BTC"}
@@ -252,7 +262,7 @@ func TestBackfill_SkipsCandlesWhenAlreadyCovered(t *testing.T) {
 		t.Fatalf("Backfill: %v", err)
 	}
 	if fc.calls != 0 {
-		t.Errorf("FetchCandles calls = %d, want 0 (candle history already covers target depth)", fc.calls)
+		t.Errorf("FetchCandles calls = %d, want 0 (candle history already covers target depth for every timeframe)", fc.calls)
 	}
 	if fc.fundingCalls == 0 {
 		t.Error("expected FetchFunding to still be called even when candle backfill is skipped")
@@ -266,14 +276,23 @@ func TestBackfill_SkipsCandlesWhenAlreadyCovered(t *testing.T) {
 }
 
 // TestBackfill_DoesNotSkipCandlesWhenCoverageIsRecentOnly confirms the flip
-// side: when the earliest stored 1d candle is more recent than
-// from+backfillCoverageTolerance, Backfill treats the pair as not yet
-// covered and runs the full candle backfill loop.
+// side: when the earliest stored candle for a timeframe is more recent than
+// from+backfillCoverageTolerance, Backfill treats that timeframe as not yet
+// covered and runs its full candle backfill loop.
 func TestBackfill_DoesNotSkipCandlesWhenCoverageIsRecentOnly(t *testing.T) {
 	fc := &fakeCollector{name: "test", maxCalls: 1, fundingMaxCalls: 1, openInterestMaxCalls: 1}
+	recent := time.Now().UTC() // far more recent than the 365d-depth target `from`
 	store := &recordingStore{
-		earliest:      map[string]time.Time{"test|BTC|1d": time.Now().UTC()}, // far more recent than the 24h-depth target `from`
-		earliestFound: map[string]bool{"test|BTC|1d": true},
+		earliest: map[string]time.Time{
+			"test|BTC|1m": recent,
+			"test|BTC|1h": recent,
+			"test|BTC|1d": recent,
+		},
+		earliestFound: map[string]bool{
+			"test|BTC|1m": true,
+			"test|BTC|1h": true,
+			"test|BTC|1d": true,
+		},
 	}
 	collectors := []exchange.Collector{fc}
 	assets := []string{"BTC"}
@@ -284,5 +303,32 @@ func TestBackfill_DoesNotSkipCandlesWhenCoverageIsRecentOnly(t *testing.T) {
 	}
 	if fc.calls == 0 {
 		t.Error("expected FetchCandles to be called: earliest candle doesn't reach back close to the target depth")
+	}
+}
+
+// TestBackfill_ChecksCoveragePerTimeframe is the regression test for the
+// bug the scoped re-review found: alreadyCovered used to check only the 1d
+// timeframe and gate ALL THREE timeframes' backfill on that single check.
+// Since the per-timeframe loop continues past a 1m/1h error and still
+// attempts 1d, 1d could end up covered while 1m/1h were never actually
+// backfilled — and then stay permanently skipped on every later run. Here
+// 1d is fully covered but 1m/1h are not, so Backfill must still attempt
+// FetchCandles for 1m and 1h even though it skips 1d.
+func TestBackfill_ChecksCoveragePerTimeframe(t *testing.T) {
+	fc := &fakeCollector{name: "test", maxCalls: 100, fundingMaxCalls: 1, openInterestMaxCalls: 1}
+	store := &recordingStore{
+		earliest:      map[string]time.Time{"test|BTC|1d": time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)},
+		earliestFound: map[string]bool{"test|BTC|1d": true},
+		// 1m and 1h intentionally have no entry: not found, so not covered.
+	}
+	collectors := []exchange.Collector{fc}
+	assets := []string{"BTC"}
+
+	err := Backfill(context.Background(), store, store, store, collectors, assets, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("Backfill: %v", err)
+	}
+	if fc.calls == 0 {
+		t.Error("expected FetchCandles to still be called for 1m/1h even though 1d is already covered")
 	}
 }

@@ -128,10 +128,10 @@ func pageWindowFor(tf exchange.Timeframe) time.Duration {
 // exchange-agnostic window is used instead of per-exchange retention logic.
 const maxOpenInterestBackfillDepth = 25 * 24 * time.Hour
 
-// backfillCoverageTolerance is how close a pair's earliest stored 1d candle
-// must be to the target `from` boundary to be treated as "already
+// backfillCoverageTolerance is how close a pair/timeframe's earliest stored
+// candle must be to the target `from` boundary to be treated as "already
 // backfilled," letting a restart skip re-running the rate-limited candle
-// backfill loop instead of discarding all prior progress.
+// backfill loop for that timeframe instead of discarding all prior progress.
 const backfillCoverageTolerance = 48 * time.Hour
 
 // Backfill runs historical backfill for every asset across every collector
@@ -181,14 +181,14 @@ func backfillCollector(ctx context.Context, cs candleStore, fs fundingStore, rs 
 		}
 		var runErr error
 
-		if alreadyCovered(ctx, cs, c.Name(), symbol, from) {
-			log.Printf("backfill %s/%s: candle history already reaches back to ~%s, skipping candle backfill", c.Name(), symbol, from.Format(time.RFC3339))
-		} else {
-			for _, tf := range timeframes {
-				if err := backfillCandles(ctx, cs, c, symbol, tf, from, to, pageWindowFor(tf)); err != nil {
-					log.Printf("backfill %s/%s/%s: %v", c.Name(), symbol, tf, err)
-					runErr = err
-				}
+		for _, tf := range timeframes {
+			if alreadyCovered(ctx, cs, c.Name(), symbol, tf, from) {
+				log.Printf("backfill %s/%s/%s: candle history already reaches back to ~%s, skipping", c.Name(), symbol, tf, from.Format(time.RFC3339))
+				continue
+			}
+			if err := backfillCandles(ctx, cs, c, symbol, tf, from, to, pageWindowFor(tf)); err != nil {
+				log.Printf("backfill %s/%s/%s: %v", c.Name(), symbol, tf, err)
+				runErr = err
 			}
 		}
 
@@ -214,18 +214,21 @@ func backfillCollector(ctx context.Context, cs candleStore, fs fundingStore, rs 
 	}
 }
 
-// alreadyCovered reports whether symbol's stored 1d candle history for
-// collector c already reaches back to within backfillCoverageTolerance of
-// from, meaning a prior backfill run already covered this pair and the
-// (rate-limited, potentially hours-long) candle backfill loop can be safely
-// skipped this run. Only 1d is checked — it's the cheapest to look up, and
-// backfillCandles always processes all three timeframes together for a pair,
-// so if 1d reaches back far enough, 1m and 1h were backfilled in that same
-// earlier run.
-func alreadyCovered(ctx context.Context, cs candleStore, collectorName, symbol string, from time.Time) bool {
-	earliest, found, err := cs.EarliestCandleTime(ctx, collectorName, symbol, exchange.Timeframe1d)
+// alreadyCovered reports whether symbol's stored candle history for
+// collector c, at timeframe tf specifically, already reaches back to within
+// backfillCoverageTolerance of from, meaning a prior backfill run already
+// covered this pair/timeframe and the (rate-limited, potentially hours-long)
+// candle backfill loop can be safely skipped for it this run. Checked
+// per-timeframe rather than proxying through a single timeframe (e.g. 1d):
+// backfillCandles's per-timeframe loop continues past an error on one
+// timeframe and still attempts the others, so one timeframe (say 1d) can
+// succeed while another (say 1m or 1h) partially or fully failed in the same
+// run — a single pair-level check would then permanently skip re-attempting
+// the failed timeframe on every subsequent run.
+func alreadyCovered(ctx context.Context, cs candleStore, collectorName, symbol string, tf exchange.Timeframe, from time.Time) bool {
+	earliest, found, err := cs.EarliestCandleTime(ctx, collectorName, symbol, tf)
 	if err != nil {
-		log.Printf("backfill %s/%s: EarliestCandleTime check failed: %v (proceeding with full candle backfill)", collectorName, symbol, err)
+		log.Printf("backfill %s/%s/%s: EarliestCandleTime check failed: %v (proceeding with full candle backfill)", collectorName, symbol, tf, err)
 		return false
 	}
 	if !found {
