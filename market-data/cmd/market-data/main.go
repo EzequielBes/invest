@@ -39,8 +39,18 @@ func main() {
 	// Rate limits are conservative fractions of each exchange's published
 	// public-endpoint limits, leaving headroom for backfill + live polling
 	// to run concurrently without tripping a 429.
+	//
+	// Binance's real IP-wide limit is REQUEST_WEIGHT: 2400/minute (from
+	// GET /fapi/v1/exchangeInfo), and FetchCandles's klines call (the
+	// dominant call pattern, always limit=1500) costs weight 11 per call
+	// (observed via the x-mbx-used-weight-1m response header). 3 req/s =
+	// 180 req/min x 11 = 1980 weight/min, ~82% of budget — leaves headroom
+	// since the backgrounded Backfill goroutine and RunLive's live/funding/
+	// OI polling all share this same rate limiter concurrently. The
+	// previous 10 req/s (6600 weight/min, ~2.75x the real budget) would
+	// very likely get 429/418'd or IP-banned under a real backfill run.
 	collectors := []exchange.Collector{
-		binance.New(httpclient.New(10, 5)),
+		binance.New(httpclient.New(3, 5)),
 		bybit.New(httpclient.New(5, 5)),
 		okx.New(httpclient.New(5, 5)),
 	}
