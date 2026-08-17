@@ -84,3 +84,11 @@ func SetStateIfNormal(ctx context.Context, db querier, runID *string, status, re
 func (s *Store) Reset(ctx context.Context, runID *string, reason string) error {
 	return s.SetState(ctx, runID, StatusNormal, reason)
 }
+
+// DeleteRunStateForTest removes risk_state/risk_decisions rows for runID —
+// test-only cleanup for callers outside this package (e.g. simulation's
+// integration tests), not used by production code.
+func (s *Store) DeleteRunStateForTest(ctx context.Context, runID string) {
+	s.pool.Exec(ctx, `DELETE FROM risk_state WHERE run_id = $1`, runID)
+	s.pool.Exec(ctx, `DELETE FROM risk_decisions WHERE run_id = $1`, runID)
+}

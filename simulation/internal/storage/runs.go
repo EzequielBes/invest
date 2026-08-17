@@ -87,3 +87,29 @@ func (s *Store) SaveResults(ctx context.Context, runID string, m metrics.Results
 	`, runID, m.TotalReturnPct, m.MaxDrawdownPct, m.SharpeRatio, m.SortinoRatio, m.AnnualizedVolatilityPct, m.WinRatePct, m.TotalTrades, m.AvgTradePct)
 	return err
 }
+
+// DeleteRunForTest removes a run and everything referencing it (trades,
+// equity curve, results) — test-only cleanup, not used by production code.
+func (s *Store) DeleteRunForTest(ctx context.Context, runID string) {
+	s.pool.Exec(ctx, `DELETE FROM backtest_results WHERE run_id = $1`, runID)
+	s.pool.Exec(ctx, `DELETE FROM backtest_equity_curve WHERE run_id = $1`, runID)
+	s.pool.Exec(ctx, `DELETE FROM backtest_trades WHERE run_id = $1`, runID)
+	s.pool.Exec(ctx, `DELETE FROM backtest_runs WHERE id = $1`, runID)
+}
+
+// RunStatus reads back a run's current status — used by tests asserting a
+// backtest reached 'completed' or 'failed'.
+func (s *Store) RunStatus(ctx context.Context, runID string) (string, error) {
+	var status string
+	err := s.pool.QueryRow(ctx, `SELECT status FROM backtest_runs WHERE id = $1`, runID).Scan(&status)
+	return status, err
+}
+
+// TradeCount counts backtest_trades rows for runID — used by tests
+// asserting trades were actually recorded, not just that Run returned no
+// error.
+func (s *Store) TradeCount(ctx context.Context, runID string) (int, error) {
+	var count int
+	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM backtest_trades WHERE run_id = $1`, runID).Scan(&count)
+	return count, err
+}
