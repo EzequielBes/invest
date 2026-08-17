@@ -4,22 +4,33 @@ package risk
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"risk-engine/storage"
 )
+
+// EvalOptions carries the optional, backward-compatible parameters a
+// simulated (backtest) caller needs and a live caller doesn't: AsOf caps
+// which candles quality checks may see (nil = no cutoff, i.e. now);
+// RunID isolates risk_state/risk_decisions to one backtest run (nil = the
+// live row, exactly today's behavior).
+type EvalOptions struct {
+	AsOf  *time.Time
+	RunID *string
+}
 
 // Evaluate is the risk engine's entry point: given the caller-supplied
 // portfolio state and a proposed operation, it returns an allow/reject
 // decision and records it, transitioning operational state to paused if a
 // loss limit is breached.
-func Evaluate(ctx context.Context, store *storage.Store, portfolio PortfolioState, proposed ProposedOperation) (Decision, error) {
-	state, err := store.GetState(ctx)
+func Evaluate(ctx context.Context, store *storage.Store, portfolio PortfolioState, proposed ProposedOperation, opts EvalOptions) (Decision, error) {
+	state, err := store.GetState(ctx, opts.RunID)
 	if err != nil {
 		return Decision{}, fmt.Errorf("risk: get state: %w", err)
 	}
 	if state.Status != storage.StatusNormal {
 		d := Decision{Allowed: false, Reasons: []string{fmt.Sprintf("system is %s: %s", state.Status, state.Reason)}}
-		if err := store.RecordDecision(ctx, toRecord(proposed, d)); err != nil {
+		if err := store.RecordDecision(ctx, opts.RunID, toRecord(proposed, d)); err != nil {
 			return Decision{}, fmt.Errorf("risk: record decision: %w", err)
 		}
 		return d, nil
@@ -54,9 +65,9 @@ func Evaluate(ctx context.Context, store *storage.Store, portfolio PortfolioStat
 	}
 
 	results = append(results,
-		checkDataFreshness(ctx, store, proposed.Asset, limits.MaxDataAgeMinutes),
-		checkVolatility(ctx, store, proposed.Asset, limits.MaxVolatility),
-		checkLiquidity(ctx, store, proposed.Asset, limits.MinLiquidity),
+		checkDataFreshness(ctx, store, proposed.Asset, limits.MaxDataAgeMinutes, opts.AsOf),
+		checkVolatility(ctx, store, proposed.Asset, limits.MaxVolatility, opts.AsOf),
+		checkLiquidity(ctx, store, proposed.Asset, limits.MinLiquidity, opts.AsOf),
 	)
 
 	d := Decision{Allowed: true, Reasons: []string{}, RulesChecked: results}
@@ -75,14 +86,14 @@ func Evaluate(ctx context.Context, store *storage.Store, portfolio PortfolioStat
 		defer tx.Rollback(context.WithoutCancel(ctx))
 
 		reason := fmt.Sprintf("auto-paused: %s limit breached", lossViolated)
-		if _, err := storage.SetStateIfNormal(ctx, tx, storage.StatusPaused, reason); err != nil {
+		if _, err := storage.SetStateIfNormal(ctx, tx, opts.RunID, storage.StatusPaused, reason); err != nil {
 			return Decision{}, fmt.Errorf("risk: set state: %w", err)
 		}
 		// If SetStateIfNormal didn't apply, state already changed (e.g. to
 		// kill_switch) since our initial read — don't downgrade it. The
 		// operation is still rejected for the loss breach either way; just
 		// record the decision without touching state further.
-		if err := storage.RecordDecision(ctx, tx, toRecord(proposed, d)); err != nil {
+		if err := storage.RecordDecision(ctx, tx, opts.RunID, toRecord(proposed, d)); err != nil {
 			return Decision{}, fmt.Errorf("risk: record decision: %w", err)
 		}
 		if err := tx.Commit(ctx); err != nil {
@@ -91,7 +102,7 @@ func Evaluate(ctx context.Context, store *storage.Store, portfolio PortfolioStat
 		return d, nil
 	}
 
-	if err := store.RecordDecision(ctx, toRecord(proposed, d)); err != nil {
+	if err := store.RecordDecision(ctx, opts.RunID, toRecord(proposed, d)); err != nil {
 		return Decision{}, fmt.Errorf("risk: record decision: %w", err)
 	}
 	return d, nil

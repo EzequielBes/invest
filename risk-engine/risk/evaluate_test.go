@@ -30,11 +30,11 @@ func testEvaluateStore(t *testing.T) *storage.Store {
 		t.Fatalf("storage.New: %v", err)
 	}
 	t.Cleanup(func() { s.Close() })
-	if err := s.SetState(context.Background(), storage.StatusNormal, "test setup"); err != nil {
+	if err := s.SetState(context.Background(), nil, storage.StatusNormal, "test setup"); err != nil {
 		t.Fatalf("reset state: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := s.SetState(context.Background(), storage.StatusNormal, "test cleanup"); err != nil {
+		if err := s.SetState(context.Background(), nil, storage.StatusNormal, "test cleanup"); err != nil {
 			t.Logf("cleanup: failed to reset state: %v", err)
 		}
 	})
@@ -63,7 +63,7 @@ func TestEvaluate_RejectsWhenAlreadyPaused(t *testing.T) {
 	seeder := testEvaluateSeeder(t)
 	ctx := context.Background()
 
-	if err := s.SetState(ctx, storage.StatusPaused, "pre-existing pause for test"); err != nil {
+	if err := s.SetState(ctx, nil, storage.StatusPaused, "pre-existing pause for test"); err != nil {
 		t.Fatalf("SetState: %v", err)
 	}
 
@@ -79,6 +79,7 @@ func TestEvaluate_RejectsWhenAlreadyPaused(t *testing.T) {
 	decision, err := Evaluate(ctx, s,
 		PortfolioState{Cash: 10000},
 		ProposedOperation{Asset: "BTC", Side: SideBuy, Value: 100},
+		EvalOptions{},
 	)
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
@@ -109,12 +110,13 @@ func TestEvaluate_AutoPausesOnLossBreach(t *testing.T) {
 	portfolio := PortfolioState{Cash: 10000, DailyLoss: 0.99} // certain to breach the seeded 0.05 limit
 	_, err = Evaluate(ctx, s, portfolio,
 		ProposedOperation{Asset: "BTC", Side: SideBuy, Value: 100},
+		EvalOptions{},
 	)
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
 
-	st, err := s.GetState(ctx)
+	st, err := s.GetState(ctx, nil)
 	if err != nil {
 		t.Fatalf("GetState: %v", err)
 	}
@@ -137,6 +139,7 @@ func TestEvaluate_RejectsOnMissingMarketData(t *testing.T) {
 	decision, err := Evaluate(context.Background(), s,
 		PortfolioState{Cash: 10000},
 		ProposedOperation{Asset: "NOSUCHASSET_" + t.Name(), Side: SideBuy, Value: 50},
+		EvalOptions{},
 	)
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
@@ -145,7 +148,7 @@ func TestEvaluate_RejectsOnMissingMarketData(t *testing.T) {
 		t.Fatal("expected rejection: no market data exists for this asset (fail-safe)")
 	}
 
-	st, err := s.GetState(context.Background())
+	st, err := s.GetState(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("GetState: %v", err)
 	}
@@ -197,7 +200,7 @@ func TestEvaluate_ApprovesHealthyOperationWithGoodMarketData(t *testing.T) {
 	}
 	proposed := ProposedOperation{Asset: asset, Side: SideBuy, Quantity: 0.5, Value: 500}
 
-	decision, err := Evaluate(ctx, s, portfolio, proposed)
+	decision, err := Evaluate(ctx, s, portfolio, proposed, EvalOptions{})
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
@@ -218,7 +221,7 @@ func TestEvaluate_ApprovesHealthyOperationWithGoodMarketData(t *testing.T) {
 	}
 
 	// State should remain normal after a clean approval.
-	st, err := s.GetState(ctx)
+	st, err := s.GetState(ctx, nil)
 	if err != nil {
 		t.Fatalf("GetState: %v", err)
 	}
@@ -252,7 +255,7 @@ func TestEvaluate_RejectsExcessiveTradeValue(t *testing.T) {
 		t.Fatalf("CountDecisions (before): %v", err)
 	}
 
-	decision, err := Evaluate(ctx, s, portfolio, proposed)
+	decision, err := Evaluate(ctx, s, portfolio, proposed, EvalOptions{})
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
@@ -275,7 +278,7 @@ func TestEvaluate_RejectsExcessiveTradeValue(t *testing.T) {
 		t.Fatalf("expected max_trade_value to be among the failed rules, got RulesChecked: %+v", decision.RulesChecked)
 	}
 
-	st, err := s.GetState(ctx)
+	st, err := s.GetState(ctx, nil)
 	if err != nil {
 		t.Fatalf("GetState: %v", err)
 	}
@@ -289,5 +292,94 @@ func TestEvaluate_RejectsExcessiveTradeValue(t *testing.T) {
 	}
 	if after != before+1 {
 		t.Fatalf("risk_decisions count for asset=%q,allowed=false = %d, want %d (before=%d) — Evaluate should have written exactly one new row", asset, after, before+1, before)
+	}
+}
+
+func TestEvaluate_RunScoped_PauseIsolatedFromLiveAndOtherRuns(t *testing.T) {
+	s := testEvaluateStore(t)
+	seeder := testEvaluateSeeder(t)
+	ctx := context.Background()
+	asset := "E2ECOIN_RUNSCOPE"
+	runA := "test-run-a-" + t.Name()
+	runB := "test-run-b-" + t.Name()
+
+	seedFreshCandles(t, ctx, seeder, asset)
+	if err := s.InitRunState(ctx, runA); err != nil {
+		t.Fatalf("InitRunState(A): %v", err)
+	}
+	if err := s.InitRunState(ctx, runB); err != nil {
+		t.Fatalf("InitRunState(B): %v", err)
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		// s.pool is unexported and this file is package risk (not storage),
+		// so unlike storage's own state_test.go we can't DELETE the rows
+		// directly. Reset both back to normal instead: InitRunState only
+		// inserts when the row is absent (ON CONFLICT DO NOTHING), so a
+		// re-run with the same t.Name()-derived runID would otherwise reuse
+		// a row left paused by this test.
+		s.SetState(ctx, &runA, storage.StatusNormal, "test cleanup")
+		s.SetState(ctx, &runB, storage.StatusNormal, "test cleanup")
+	})
+
+	// Breach the loss limit inside run A only.
+	portfolio := PortfolioState{Cash: 10000, DailyLoss: 0.99}
+	_, err := Evaluate(ctx, s, portfolio,
+		ProposedOperation{Asset: asset, Side: SideBuy, Value: 100},
+		EvalOptions{RunID: &runA},
+	)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+
+	stA, err := s.GetState(ctx, &runA)
+	if err != nil {
+		t.Fatalf("GetState(A): %v", err)
+	}
+	if stA.Status != storage.StatusPaused {
+		t.Fatalf("run A Status = %q, want %q", stA.Status, storage.StatusPaused)
+	}
+
+	stB, err := s.GetState(ctx, &runB)
+	if err != nil {
+		t.Fatalf("GetState(B): %v", err)
+	}
+	if stB.Status != storage.StatusNormal {
+		t.Errorf("run B Status = %q, want %q — a breach in run A must not affect run B", stB.Status, storage.StatusNormal)
+	}
+
+	live, err := s.GetState(ctx, nil)
+	if err != nil {
+		t.Fatalf("GetState(nil): %v", err)
+	}
+	if live.Status != storage.StatusNormal {
+		t.Errorf("live Status = %q, want %q — a breach in a backtest run must never touch live state", live.Status, storage.StatusNormal)
+	}
+}
+
+func TestEvaluate_AsOf_QualityChecksIgnoreFutureCandles(t *testing.T) {
+	s := testEvaluateStore(t)
+	seeder := testEvaluateSeeder(t)
+	ctx := context.Background()
+	asset := "E2ECOIN_ASOF"
+
+	// Seed only a stale-relative-to-asOf candle: 45 minutes before asOf,
+	// exceeding the seeded max_data_age_minutes (30).
+	past := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Minute)
+	if err := seeder.InsertCandle(ctx, ReferenceExchange, asset, past, 100, 100, 100, 100, 50000); err != nil {
+		t.Fatalf("seed candle: %v", err)
+	}
+	t.Cleanup(func() { seeder.DeleteCandles(context.Background(), ReferenceExchange, asset) })
+
+	asOf := past.Add(45 * time.Minute)
+	decision, err := Evaluate(ctx, s, PortfolioState{Cash: 10000},
+		ProposedOperation{Asset: asset, Side: SideBuy, Value: 100},
+		EvalOptions{AsOf: &asOf},
+	)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if decision.Allowed {
+		t.Fatal("expected rejection: only candle available is 45 minutes stale relative to asOf, limit is 30")
 	}
 }
