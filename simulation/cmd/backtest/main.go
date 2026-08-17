@@ -72,6 +72,12 @@ func run(periodStartStr, periodEndStr, timeframesStr, drivingTF, assetsStr strin
 	if len(assets) == 0 {
 		return fmt.Errorf("-assets is required")
 	}
+	if shortPeriod <= 0 || longPeriod <= 0 {
+		return fmt.Errorf("-ma-short-period and -ma-long-period must be > 0")
+	}
+	if shortPeriod >= longPeriod {
+		return fmt.Errorf("-ma-short-period must be < -ma-long-period")
+	}
 
 	strat := &strategy.MovingAverageCrossStrategy{
 		Asset: assets[0], Timeframe: drivingTF,
@@ -105,7 +111,14 @@ func run(periodStartStr, periodEndStr, timeframesStr, drivingTF, assetsStr strin
 	if err != nil {
 		return fmt.Errorf("backtest run %s: %w", runID, err)
 	}
-	fmt.Printf("backtest run %s completed\n", runID)
+
+	tradeCount, err := simStore.TradeCount(ctx, runID)
+	if err != nil {
+		fmt.Printf("backtest run %s completed\n", runID)
+		fmt.Fprintf(os.Stderr, "warning: failed to fetch trade count for run %s: %v\n", runID, err)
+		return nil
+	}
+	fmt.Printf("backtest run %s completed (%d trade attempts recorded)\n", runID, tradeCount)
 	return nil
 }
 
