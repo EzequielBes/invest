@@ -69,3 +69,23 @@ func (s *Store) RecentCandles(ctx context.Context, exchange, symbol, timeframe s
 	}
 	return candles, rows.Err()
 }
+
+// InsertCandleForTest inserts or updates one candle row directly — a thin
+// seeding seam for this module's own tests (marketview, engine) that need
+// fixture data. Not used by any production code path.
+func (s *Store) InsertCandleForTest(ctx context.Context, exchange, symbol, timeframe string, ts time.Time, open, high, low, close, volume float64) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO candles (exchange, symbol, timeframe, ts, open, high, low, close, volume)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (exchange, symbol, timeframe, ts) DO UPDATE
+		SET open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+		    close = EXCLUDED.close, volume = EXCLUDED.volume
+	`, exchange, symbol, timeframe, ts, open, high, low, close, volume)
+	return err
+}
+
+// DeleteCandlesForTest removes every candle for exchange/symbol/timeframe —
+// paired with InsertCandleForTest for fixture cleanup in this module's tests.
+func (s *Store) DeleteCandlesForTest(ctx context.Context, exchange, symbol, timeframe string) {
+	s.pool.Exec(ctx, `DELETE FROM candles WHERE exchange = $1 AND symbol = $2 AND timeframe = $3`, exchange, symbol, timeframe)
+}
