@@ -24,7 +24,9 @@ type DecisionRecord struct {
 	RulesChecked []RuleResultRecord
 }
 
-func RecordDecision(ctx context.Context, db querier, d DecisionRecord) error {
+// RecordDecision writes an audit row for one Evaluate call. runID is nil
+// for a live operation, or the backtest run this decision belongs to.
+func RecordDecision(ctx context.Context, db querier, runID *string, d DecisionRecord) error {
 	reasonsJSON, err := json.Marshal(d.Reasons)
 	if err != nil {
 		return err
@@ -34,12 +36,12 @@ func RecordDecision(ctx context.Context, db querier, d DecisionRecord) error {
 		return err
 	}
 	_, err = db.Exec(ctx, `
-		INSERT INTO risk_decisions (ts, asset, side, quantity, value, allowed, reasons, rules_checked)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	`, time.Now().UTC(), d.Asset, d.Side, d.Quantity, d.Value, d.Allowed, reasonsJSON, rulesJSON)
+		INSERT INTO risk_decisions (ts, asset, side, quantity, value, allowed, reasons, rules_checked, run_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	`, time.Now().UTC(), d.Asset, d.Side, d.Quantity, d.Value, d.Allowed, reasonsJSON, rulesJSON, runID)
 	return err
 }
 
-func (s *Store) RecordDecision(ctx context.Context, d DecisionRecord) error {
-	return RecordDecision(ctx, s.pool, d)
+func (s *Store) RecordDecision(ctx context.Context, runID *string, d DecisionRecord) error {
+	return RecordDecision(ctx, s.pool, runID, d)
 }

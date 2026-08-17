@@ -20,7 +20,7 @@ func TestRecordDecision(t *testing.T) {
 		},
 	}
 
-	if err := s.RecordDecision(ctx, d); err != nil {
+	if err := s.RecordDecision(ctx, nil, d); err != nil {
 		t.Fatalf("RecordDecision: %v", err)
 	}
 
@@ -72,5 +72,30 @@ func TestRecordDecision(t *testing.T) {
 		if gotRules[1].Rule != "asset_concentration" || gotRules[1].Passed != true || gotRules[1].Measured != 0.10 || gotRules[1].Limit != 0.20 {
 			t.Errorf("rules_checked[1] = %+v, want {Rule:asset_concentration, Passed:true, Measured:0.10, Limit:0.20, ...}", gotRules[1])
 		}
+	}
+}
+
+func TestRecordDecision_RunScoped(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	runID := "test-run-" + t.Name()
+
+	d := DecisionRecord{
+		Asset: "ETH", Side: "buy", Quantity: 1, Value: 100,
+		Allowed: true, Reasons: []string{}, RulesChecked: []RuleResultRecord{},
+	}
+	if err := s.RecordDecision(ctx, &runID, d); err != nil {
+		t.Fatalf("RecordDecision: %v", err)
+	}
+
+	var gotRunID string
+	err := s.pool.QueryRow(ctx, `
+		SELECT run_id FROM risk_decisions WHERE asset = 'ETH' AND run_id = $1 ORDER BY id DESC LIMIT 1
+	`, runID).Scan(&gotRunID)
+	if err != nil {
+		t.Fatalf("query inserted row: %v", err)
+	}
+	if gotRunID != runID {
+		t.Errorf("run_id = %q, want %q", gotRunID, runID)
 	}
 }
