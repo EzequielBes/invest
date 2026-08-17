@@ -34,7 +34,7 @@ func TestLatestCandle(t *testing.T) {
 		{Time: now.Add(-1 * time.Minute), Open: 100.5, High: 102, Low: 100, Close: 101, Volume: 12},
 	})
 
-	c, found, err := s.LatestCandle(context.Background(), "test-exchange", "TESTCOIN")
+	c, found, err := s.LatestCandle(context.Background(), "test-exchange", "TESTCOIN", nil)
 	if err != nil {
 		t.Fatalf("LatestCandle: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestLatestCandle(t *testing.T) {
 
 func TestLatestCandle_NotFound(t *testing.T) {
 	s := testStore(t)
-	_, found, err := s.LatestCandle(context.Background(), "test-exchange", "NOSUCHASSET")
+	_, found, err := s.LatestCandle(context.Background(), "test-exchange", "NOSUCHASSET", nil)
 	if err != nil {
 		t.Fatalf("LatestCandle: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestRecentCandles_OldestFirst(t *testing.T) {
 		{Time: now.Add(-1 * time.Minute), Close: 104, Volume: 5},
 	})
 
-	candles, err := s.RecentCandles(context.Background(), "test-exchange", "TESTCOIN2", 3)
+	candles, err := s.RecentCandles(context.Background(), "test-exchange", "TESTCOIN2", 3, nil)
 	if err != nil {
 		t.Fatalf("RecentCandles: %v", err)
 	}
@@ -86,5 +86,52 @@ func TestRecentCandles_OldestFirst(t *testing.T) {
 			t.Errorf("candles[%d].Close = %v, want %v (most recent 3, oldest-first): got %+v", i, candles[i].Close, w, candles)
 			break
 		}
+	}
+}
+
+func TestLatestCandle_AsOf_IgnoresFutureCandles(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().UTC().Truncate(time.Minute)
+	seedCandles(t, s, "test-exchange", "TESTCOIN3", []Candle{
+		{Time: now.Add(-3 * time.Minute), Close: 100, Volume: 1},
+		{Time: now.Add(-2 * time.Minute), Close: 101, Volume: 1},
+		{Time: now, Close: 999, Volume: 1}, // "future" relative to asOf below
+	})
+
+	asOf := now.Add(-1 * time.Minute)
+	c, found, err := s.LatestCandle(context.Background(), "test-exchange", "TESTCOIN3", &asOf)
+	if err != nil {
+		t.Fatalf("LatestCandle: %v", err)
+	}
+	if !found {
+		t.Fatal("expected found=true")
+	}
+	if c.Close != 101 {
+		t.Errorf("Close = %v, want 101 (the -2min candle; the -3min-cutoff excludes the -1min-cutoff's own not-yet-closed candle and the future one)", c.Close)
+	}
+}
+
+func TestRecentCandles_AsOf_IgnoresFutureCandles(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().UTC().Truncate(time.Minute)
+	seedCandles(t, s, "test-exchange", "TESTCOIN4", []Candle{
+		{Time: now.Add(-3 * time.Minute), Close: 100, Volume: 1},
+		{Time: now.Add(-2 * time.Minute), Close: 101, Volume: 1},
+		{Time: now.Add(-1 * time.Minute), Close: 102, Volume: 1},
+		{Time: now, Close: 999, Volume: 1}, // must never be visible
+	})
+
+	asOf := now.Add(-1 * time.Minute)
+	candles, err := s.RecentCandles(context.Background(), "test-exchange", "TESTCOIN4", 10, &asOf)
+	if err != nil {
+		t.Fatalf("RecentCandles: %v", err)
+	}
+	for _, c := range candles {
+		if c.Close == 999 {
+			t.Fatalf("RecentCandles returned a candle at or after asOf's cutoff: %+v", candles)
+		}
+	}
+	if len(candles) != 2 {
+		t.Fatalf("len(candles) = %d, want 2 (closes 100, 101 — the -1min candle's own close time equals asOf, so it's excluded too)", len(candles))
 	}
 }
