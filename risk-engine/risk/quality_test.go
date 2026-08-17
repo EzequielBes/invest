@@ -20,10 +20,10 @@ type fakeMarketData struct {
 	recentErr   error
 }
 
-func (f *fakeMarketData) LatestCandle(ctx context.Context, exchange, symbol string) (storage.Candle, bool, error) {
+func (f *fakeMarketData) LatestCandle(ctx context.Context, exchange, symbol string, asOf *time.Time) (storage.Candle, bool, error) {
 	return f.latest, f.latestFound, f.latestErr
 }
-func (f *fakeMarketData) RecentCandles(ctx context.Context, exchange, symbol string, n int) ([]storage.Candle, error) {
+func (f *fakeMarketData) RecentCandles(ctx context.Context, exchange, symbol string, n int, asOf *time.Time) ([]storage.Candle, error) {
 	return f.recent, f.recentErr
 }
 
@@ -32,7 +32,7 @@ func TestCheckDataFreshness_RejectsStaleData(t *testing.T) {
 		latest:      storage.Candle{Time: time.Now().UTC().Add(-45 * time.Minute)},
 		latestFound: true,
 	}
-	result := checkDataFreshness(context.Background(), md, "BTC", 30)
+	result := checkDataFreshness(context.Background(), md, "BTC", 30, nil)
 	if result.Passed {
 		t.Fatal("expected rejection: candle is 45 minutes old, limit 30")
 	}
@@ -40,7 +40,7 @@ func TestCheckDataFreshness_RejectsStaleData(t *testing.T) {
 
 func TestCheckDataFreshness_RejectsMissingData(t *testing.T) {
 	md := &fakeMarketData{latestFound: false}
-	result := checkDataFreshness(context.Background(), md, "BTC", 30)
+	result := checkDataFreshness(context.Background(), md, "BTC", 30, nil)
 	if result.Passed {
 		t.Fatal("expected rejection when no candle data exists (fail-safe)")
 	}
@@ -48,7 +48,7 @@ func TestCheckDataFreshness_RejectsMissingData(t *testing.T) {
 
 func TestCheckDataFreshness_RejectsOnLookupError(t *testing.T) {
 	md := &fakeMarketData{latestErr: errors.New("connection refused")}
-	result := checkDataFreshness(context.Background(), md, "BTC", 30)
+	result := checkDataFreshness(context.Background(), md, "BTC", 30, nil)
 	if result.Passed {
 		t.Fatal("expected rejection when the market data lookup itself fails")
 	}
@@ -65,9 +65,26 @@ func TestCheckDataFreshness_AllowsFreshData(t *testing.T) {
 		latest:      storage.Candle{Time: time.Now().UTC().Add(-5 * time.Minute)},
 		latestFound: true,
 	}
-	result := checkDataFreshness(context.Background(), md, "BTC", 30)
+	result := checkDataFreshness(context.Background(), md, "BTC", 30, nil)
 	if !result.Passed {
 		t.Fatal("expected approval: candle is 5 minutes old, limit 30")
+	}
+}
+
+func TestCheckDataFreshness_AsOf_MeasuresAgeRelativeToAsOf(t *testing.T) {
+	// The candle is "ancient" relative to real wall-clock now, but fresh
+	// relative to a simulated asOf a year in the past — freshness must be
+	// judged against asOf, not time.Now(), or every backtest over
+	// historical data would reject on data_freshness immediately.
+	candleTime := time.Date(2020, 1, 1, 12, 0, 0, 0, time.UTC)
+	asOf := candleTime.Add(5 * time.Minute)
+	md := &fakeMarketData{
+		latest:      storage.Candle{Time: candleTime},
+		latestFound: true,
+	}
+	result := checkDataFreshness(context.Background(), md, "BTC", 30, &asOf)
+	if !result.Passed {
+		t.Fatalf("expected approval: candle is 5 minutes old relative to asOf, limit 30, got Detail=%q", result.Detail)
 	}
 }
 
@@ -81,7 +98,7 @@ func TestCheckVolatility_RejectsHighVolatility(t *testing.T) {
 		{Time: base.Add(3 * time.Minute), Close: 110},
 		{Time: base.Add(4 * time.Minute), Close: 100},
 	}}
-	result := checkVolatility(context.Background(), md, "BTC", 0.02)
+	result := checkVolatility(context.Background(), md, "BTC", 0.02, nil)
 	if result.Passed {
 		t.Fatalf("expected rejection: measured volatility %.4f should exceed limit 0.02", result.Measured)
 	}
@@ -89,7 +106,7 @@ func TestCheckVolatility_RejectsHighVolatility(t *testing.T) {
 
 func TestCheckVolatility_RejectsInsufficientData(t *testing.T) {
 	md := &fakeMarketData{recent: []storage.Candle{{Close: 100}}}
-	result := checkVolatility(context.Background(), md, "BTC", 0.5)
+	result := checkVolatility(context.Background(), md, "BTC", 0.5, nil)
 	if result.Passed {
 		t.Fatal("expected rejection with fewer than 2 candles (fail-safe)")
 	}
@@ -97,7 +114,7 @@ func TestCheckVolatility_RejectsInsufficientData(t *testing.T) {
 
 func TestCheckVolatility_RejectsOnLookupError(t *testing.T) {
 	md := &fakeMarketData{recentErr: errors.New("connection refused")}
-	result := checkVolatility(context.Background(), md, "BTC", 0.5)
+	result := checkVolatility(context.Background(), md, "BTC", 0.5, nil)
 	if result.Passed {
 		t.Fatal("expected rejection when the market data lookup itself fails")
 	}
@@ -115,7 +132,7 @@ func TestCheckLiquidity_RejectsLowVolume(t *testing.T) {
 		{Time: base, Close: 100, Volume: 1},
 		{Time: base.Add(time.Minute), Close: 100, Volume: 1},
 	}}
-	result := checkLiquidity(context.Background(), md, "BTC", 1000000)
+	result := checkLiquidity(context.Background(), md, "BTC", 1000000, nil)
 	if result.Passed {
 		t.Fatalf("expected rejection: measured liquidity %.2f should be under limit 1000000", result.Measured)
 	}
@@ -123,7 +140,7 @@ func TestCheckLiquidity_RejectsLowVolume(t *testing.T) {
 
 func TestCheckLiquidity_RejectsOnLookupError(t *testing.T) {
 	md := &fakeMarketData{recentErr: errors.New("connection refused")}
-	result := checkLiquidity(context.Background(), md, "BTC", 100000)
+	result := checkLiquidity(context.Background(), md, "BTC", 100000, nil)
 	if result.Passed {
 		t.Fatal("expected rejection when the market data lookup itself fails")
 	}
@@ -141,7 +158,7 @@ func TestCheckLiquidity_AllowsHighVolume(t *testing.T) {
 		{Time: base, Close: 100, Volume: 10000},
 		{Time: base.Add(time.Minute), Close: 100, Volume: 10000},
 	}}
-	result := checkLiquidity(context.Background(), md, "BTC", 100000)
+	result := checkLiquidity(context.Background(), md, "BTC", 100000, nil)
 	if !result.Passed {
 		t.Fatalf("expected approval: measured liquidity %.2f should meet limit 100000", result.Measured)
 	}

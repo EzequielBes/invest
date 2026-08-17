@@ -20,19 +20,23 @@ const ReferenceExchange = "binance"
 // marketDataReader is the slice of *storage.Store this file depends on, so
 // quality rules are unit-testable with a fake instead of a real database.
 type marketDataReader interface {
-	LatestCandle(ctx context.Context, exchange, symbol string) (storage.Candle, bool, error)
-	RecentCandles(ctx context.Context, exchange, symbol string, n int) ([]storage.Candle, error)
+	LatestCandle(ctx context.Context, exchange, symbol string, asOf *time.Time) (storage.Candle, bool, error)
+	RecentCandles(ctx context.Context, exchange, symbol string, n int, asOf *time.Time) ([]storage.Candle, error)
 }
 
-func checkDataFreshness(ctx context.Context, md marketDataReader, asset string, maxAgeMinutes int) RuleResult {
-	candle, found, err := md.LatestCandle(ctx, ReferenceExchange, asset)
+func checkDataFreshness(ctx context.Context, md marketDataReader, asset string, maxAgeMinutes int, asOf *time.Time) RuleResult {
+	candle, found, err := md.LatestCandle(ctx, ReferenceExchange, asset, asOf)
 	if err != nil {
 		return RuleResult{Rule: "data_freshness", Passed: false, Limit: float64(maxAgeMinutes), Detail: fmt.Sprintf("market data lookup failed: %v", err)}
 	}
 	if !found {
 		return RuleResult{Rule: "data_freshness", Passed: false, Limit: float64(maxAgeMinutes), Detail: "no market data available"}
 	}
-	age := time.Since(candle.Time).Minutes()
+	reference := time.Now()
+	if asOf != nil {
+		reference = *asOf
+	}
+	age := reference.Sub(candle.Time).Minutes()
 	return RuleResult{
 		Rule: "data_freshness", Passed: age <= float64(maxAgeMinutes),
 		Measured: age, Limit: float64(maxAgeMinutes),
@@ -40,8 +44,8 @@ func checkDataFreshness(ctx context.Context, md marketDataReader, asset string, 
 	}
 }
 
-func checkVolatility(ctx context.Context, md marketDataReader, asset string, maxVolatility float64) RuleResult {
-	candles, err := md.RecentCandles(ctx, ReferenceExchange, asset, 60)
+func checkVolatility(ctx context.Context, md marketDataReader, asset string, maxVolatility float64, asOf *time.Time) RuleResult {
+	candles, err := md.RecentCandles(ctx, ReferenceExchange, asset, 60, asOf)
 	if err != nil {
 		return RuleResult{Rule: "volatility", Passed: false, Limit: maxVolatility, Detail: fmt.Sprintf("market data lookup failed: %v", err)}
 	}
@@ -81,8 +85,8 @@ func stddevReturns(candles []storage.Candle) float64 {
 	return math.Sqrt(variance)
 }
 
-func checkLiquidity(ctx context.Context, md marketDataReader, asset string, minLiquidity float64) RuleResult {
-	candles, err := md.RecentCandles(ctx, ReferenceExchange, asset, 60)
+func checkLiquidity(ctx context.Context, md marketDataReader, asset string, minLiquidity float64, asOf *time.Time) RuleResult {
+	candles, err := md.RecentCandles(ctx, ReferenceExchange, asset, 60, asOf)
 	if err != nil {
 		return RuleResult{Rule: "liquidity", Passed: false, Limit: minLiquidity, Detail: fmt.Sprintf("market data lookup failed: %v", err)}
 	}
