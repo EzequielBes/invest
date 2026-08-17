@@ -182,8 +182,15 @@ func TestRun_RiskBreach_PausesOnlyThisRun(t *testing.T) {
 
 	// Quantity 9 @ ~100 keeps trade value (900) under the seeded
 	// max_value_per_trade limit (1000) so the buy is actually approved.
+	// The second op lands in [base+3h, base+4h) — the window where the
+	// crash to 40 has already been marked to market — so this genuinely
+	// Strategy-proposed operation is the one that flows through
+	// risk.Evaluate, gets rejected on daily_loss, and triggers the pause
+	// (mirroring exactly how live operation only checks limits when a
+	// trade is actually proposed).
 	strat, err := strategy.NewFixedOperationsStrategy([]strategy.FixedOp{
 		{Time: base.Add(30 * time.Minute), Asset: asset, Side: risk.SideBuy, Quantity: 9},
+		{Time: base.Add(3*time.Hour + 30*time.Minute), Asset: asset, Side: risk.SideBuy, Quantity: 1},
 	}, "1h")
 	if err != nil {
 		t.Fatalf("NewFixedOperationsStrategy: %v", err)

@@ -132,19 +132,6 @@ func runLoop(ctx context.Context, riskStore *riskstorage.Store, simStore *simsto
 		}
 
 		asOf := closeTime
-
-		// risk.Evaluate only runs its loss-limit checks (and pauses on
-		// breach) as a side effect of evaluating a proposed operation. A
-		// candle can breach a loss limit with no new trade proposed (e.g.
-		// a price crash while sitting on an existing position), so probe
-		// with a zero-value op to keep risk_state in sync even when the
-		// strategy has nothing to propose this candle.
-		if len(proposed) == 0 && len(cfg.Assets) > 0 {
-			if _, err := risk.Evaluate(ctx, riskStore, risk.PortfolioState(snap), risk.ProposedOperation{Asset: cfg.Assets[0]}, risk.EvalOptions{AsOf: &asOf, RunID: &runID}); err != nil {
-				return fmt.Errorf("engine: risk evaluate (passive check) at %s: %w", closeTime, err)
-			}
-		}
-
 		for _, op := range proposed {
 			decision, err := risk.Evaluate(ctx, riskStore, risk.PortfolioState(snap), op, risk.EvalOptions{AsOf: &asOf, RunID: &runID})
 			if err != nil {
