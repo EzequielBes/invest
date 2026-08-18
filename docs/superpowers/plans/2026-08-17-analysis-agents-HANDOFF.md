@@ -37,14 +37,19 @@ que importa dele.
 Basta seguir o plano tarefa por tarefa — cada tarefa já tem os arquivos a
 criar/editar, o código completo, os comandos de teste e o comando de commit.
 
-## Status no momento em que este arquivo foi escrito
+## Status (atualizado em 2026-08-18)
 
-- ✅ **Tarefa 1** (scaffold do módulo: `go.mod`, `docker-compose.yml`,
-  `migrations/001_init.sql`, `internal/storage/db.go`) — implementada,
-  commit `2cdacc0` na branch `analysis-agents`. Revisão de tarefa despachada
-  e **ainda em andamento** quando este arquivo foi escrito — checar o
-  resultado antes de prosseguir (ver "Próximos passos").
-- ⬜ Tarefas 2 a 11 — não iniciadas.
+- ✅ Tarefas 1-6 implementadas, revisadas e aprovadas sem findings
+  Critical/Important — commits `2cdacc0`..`62ba5ce` na branch
+  `analysis-agents`.
+- ❌ **Tarefa 7 (cliente LLM) foi despachada mas o subagent implementador foi
+  encerrado por limite de sessão antes de commitar qualquer código.** Nenhum
+  commit da Tarefa 7 existe na branch — worktree está limpo, começa do zero.
+- ⬜ Tarefas 8 a 11 — não iniciadas.
+
+**Lista de tasks objetiva para retomar (recomendado para quem não usa a
+skill de SDD, ex: Codex):**
+`docs/superpowers/plans/2026-08-17-analysis-agents-CODEX-TASKS.md`
 
 ## Decisão já tomada (ruling) — relevante para as Tarefas 7, 8, 9, 10
 
