@@ -35,6 +35,58 @@ type Technical struct {
 	RelativeVolume float64 `json:"relative_volume"`
 }
 
+// PartialTechnical contains every indicator that can be calculated from an
+// undersized candle set. Missing values are omitted when marshalled to JSON.
+type PartialTechnical struct {
+	Status         string   `json:"status"`
+	SMAShort       *float64 `json:"sma_short,omitempty"`
+	SMALong        *float64 `json:"sma_long,omitempty"`
+	Trend          *string  `json:"trend,omitempty"`
+	RSI            *float64 `json:"rsi,omitempty"`
+	Volatility     *float64 `json:"volatility,omitempty"`
+	RelativeVolume *float64 `json:"relative_volume,omitempty"`
+}
+
+// ComputePartial calculates only the indicators supported by the available
+// candles. It is intended for the insufficient-data path in the agent.
+func ComputePartial(candles []Candle) PartialTechnical {
+	result := PartialTechnical{Status: "insufficient_data"}
+	closes := make([]float64, len(candles))
+	for i, candle := range candles {
+		closes[i] = candle.Close
+	}
+	if len(closes) >= smaShortPeriod {
+		value := sma(closes, smaShortPeriod)
+		result.SMAShort = &value
+	}
+	if len(closes) >= smaLongPeriod {
+		value := sma(closes, smaLongPeriod)
+		result.SMALong = &value
+		if result.SMAShort != nil && value != 0 {
+			trend := "neutral"
+			diff := (*result.SMAShort - value) / value
+			switch {
+			case diff > 0.001:
+				trend = "bullish"
+			case diff < -0.001:
+				trend = "bearish"
+			}
+			result.Trend = &trend
+		}
+	}
+	if len(closes) >= rsiPeriod+1 {
+		value := rsi(closes, rsiPeriod)
+		result.RSI = &value
+	}
+	if len(closes) >= volWindow+1 {
+		value := volatility(closes, volWindow)
+		result.Volatility = &value
+		value = relativeVolume(candles, volWindow)
+		result.RelativeVolume = &value
+	}
+	return result
+}
+
 // Compute calculates technical indicators from closed candles, oldest
 // first. Returns an error if fewer than MinCandles are supplied — callers
 // should treat that as "insufficient data", not a bug.
