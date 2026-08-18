@@ -229,3 +229,20 @@ func TestRun_MissingHeldPositionPriceFailsTheWholeRun(t *testing.T) {
 		t.Fatal("expected an error when a held position has no price data, got nil")
 	}
 }
+
+func TestRun_ZeroPortfolioValueFailsTheWholeRun(t *testing.T) {
+	store, riskStore := testStores(t)
+	ctx := context.Background()
+	runID := uuid.NewString()
+	seedAnalysisRun(t, store, runID, testAssetBuy, true)
+	seedCandle(t, store, testAssetBuy, 50000)
+	t.Cleanup(func() {
+		store.DeleteDecisionsForRunForTest(ctx, runID)
+	})
+
+	client := &fakeLLMClient{decision: llm.Decision{Side: "hold"}}
+	err := Run(ctx, store, riskStore, client, runID, []string{testAssetBuy}, "1h", 0, nil, 0, 0, 0, 0)
+	if err == nil {
+		t.Fatal("expected an error when cash and positions are both zero/unset, got nil")
+	}
+}

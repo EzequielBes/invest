@@ -161,6 +161,9 @@ func buildPortfolio(ctx context.Context, store *storage.Store, positions map[str
 		Drawdown:          drawdown,
 		ConsecutiveLosses: consecutiveLosses,
 	}
+	if total <= 0 {
+		return risk.PortfolioState{}, 0, fmt.Errorf("portfolio value is zero — set -cash and/or -positions")
+	}
 	return portfolio, total, nil
 }
 
