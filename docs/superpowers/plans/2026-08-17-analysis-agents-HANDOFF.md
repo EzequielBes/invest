@@ -37,19 +37,22 @@ que importa dele.
 Basta seguir o plano tarefa por tarefa — cada tarefa já tem os arquivos a
 criar/editar, o código completo, os comandos de teste e o comando de commit.
 
-## Status (atualizado em 2026-08-18)
+## Status (atualizado em 2026-08-18, segunda passagem)
 
-- ✅ Tarefas 1-6 implementadas, revisadas e aprovadas sem findings
-  Critical/Important — commits `2cdacc0`..`62ba5ce` na branch
-  `analysis-agents`.
-- ❌ **Tarefa 7 (cliente LLM) foi despachada mas o subagent implementador foi
-  encerrado por limite de sessão antes de commitar qualquer código.** Nenhum
-  commit da Tarefa 7 existe na branch — worktree está limpo, começa do zero.
-- ⬜ Tarefas 8 a 11 — não iniciadas.
-
-**Lista de tasks objetiva para retomar (recomendado para quem não usa a
-skill de SDD, ex: Codex):**
-`docs/superpowers/plans/2026-08-17-analysis-agents-CODEX-TASKS.md`
+- ✅ Tarefas 1-11 **completas** — commits `2cdacc0`..`62ba5ce` (Tasks 1-6),
+  `cb73f99` (Tasks 7-9: cliente LLM + os 4 agentes, com indicadores
+  parciais no caminho de dados insuficientes, per spec), `1f4a35b` (Task
+  10: CLI, com abort da run em falha de `SaveResult`, per spec), `de196c2`
+  (Task 11: testes de integração ponta-a-ponta).
+- `go build ./...` e `go test ./... -count=1` passam inteiros dentro do
+  container `analysis-dev`.
+- **Ainda não mergeado em `master`** — não fazer merge/push sem confirmar
+  com o usuário.
+- **Gap conhecido:** `internal/agents/derivatives.go` não tem nenhum teste
+  (nem unitário nem de integração). Ver
+  `docs/superpowers/plans/2026-08-18-analysis-agents-TEST-CHECKLIST.md`
+  para essa e outras lacunas de cobertura — deixadas de propósito para o
+  Codex escrever como TDD, não para reabrir a implementação.
 
 ## Decisão já tomada (ruling) — relevante para as Tarefas 7, 8, 9, 10
 
