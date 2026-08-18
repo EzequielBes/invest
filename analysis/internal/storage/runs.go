@@ -81,3 +81,34 @@ func (s *Store) ResultCount(ctx context.Context, runID string) (int, error) {
 	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM analysis_results WHERE run_id = $1`, runID).Scan(&count)
 	return count, err
 }
+
+// PersistedResult is the result shape read back by integration tests.
+type PersistedResult struct {
+	AgentType string
+	Asset     string
+	Narrative string
+}
+
+// ResultsForTest reads persisted results in creation order — used by tests.
+func (s *Store) ResultsForTest(ctx context.Context, runID string) ([]PersistedResult, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT agent_type, asset, narrative
+		FROM analysis_results
+		WHERE run_id = $1
+		ORDER BY created_at, id
+	`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []PersistedResult
+	for rows.Next() {
+		var result PersistedResult
+		if err := rows.Scan(&result.AgentType, &result.Asset, &result.Narrative); err != nil {
+			return nil, err
+		}
+		results = append(results, result)
+	}
+	return results, rows.Err()
+}
