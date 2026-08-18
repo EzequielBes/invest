@@ -110,7 +110,8 @@ strategist/
 ├── docker-compose.yml        (golang:1.22, rede market-data_default)
 ├── cmd/
 │   └── strategist/
-│       └── main.go           (CLI: -run-id, -assets, -timeframe, -cash, -positions)
+│       └── main.go           (CLI: -run-id, -assets, -timeframe, -cash, -positions,
+│                              -daily-loss, -weekly-loss, -drawdown, -consecutive-losses)
 ├── internal/
 │   ├── storage/
 │   │   ├── db.go             (pool de conexão)
@@ -214,7 +215,19 @@ Flags:
 - `-positions` (default vazio): posições atuais, formato
   `SYMBOL:quantidade` separado por vírgula (ex.
   `-positions=BTC:0.5,ETH:2`) — usado para montar o `risk.PortfolioState`.
-  Ausente = sem posições abertas.
+  Ausente = sem posições abertas. O `Value` de cada posição é calculado
+  buscando o preço atual do símbolo (mesma fonte que `-timeframe` usa para
+  o ativo decidido) — se um símbolo em `-positions` não tiver dado de
+  preço, é um erro fatal para a execução inteira (uma avaliação de risco
+  sobre um portfólio com valor errado é pior que não avaliar).
+- `-daily-loss`, `-weekly-loss`, `-drawdown` (default `0`, fração — ex.
+  `0.02` = 2%), `-consecutive-losses` (default `0`): completam os campos
+  de `risk.PortfolioState` que `risk.Evaluate` usa para os limites de
+  perda (`checkDailyLoss`/`checkWeeklyLoss`/`checkDrawdown`/
+  `checkConsecutiveLosses`) — mesmo espírito manual de `-cash`/
+  `-positions`, já que não há rastreamento automático de perdas nesta
+  fase. Omitidos = sem perdas registradas (limites de perda efetivamente
+  inertes até haver rastreamento automático).
 
 Fluxo:
 
