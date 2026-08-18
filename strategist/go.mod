@@ -4,6 +4,7 @@ go 1.22
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.9.0
+	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.6.0
 	risk-engine v0.0.0-00010101000000-000000000000
 )
