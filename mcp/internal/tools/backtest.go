@@ -33,16 +33,16 @@ type RunBacktestArgs struct {
 // recorded"); TotalTrades is the count of allowed, closed trades
 // win-rate/avg-trade percentages are actually computed from.
 type RunBacktestResult struct {
-	BacktestRunID          string  `json:"backtest_run_id"`
+	BacktestRunID           string  `json:"backtest_run_id"`
 	TradeAttempts           int     `json:"trade_attempts"`
-	TotalReturnPct           float64 `json:"total_return_pct"`
-	MaxDrawdownPct           float64 `json:"max_drawdown_pct"`
-	SharpeRatio              float64 `json:"sharpe_ratio"`
-	SortinoRatio             float64 `json:"sortino_ratio"`
+	TotalReturnPct          float64 `json:"total_return_pct"`
+	MaxDrawdownPct          float64 `json:"max_drawdown_pct"`
+	SharpeRatio             float64 `json:"sharpe_ratio"`
+	SortinoRatio            float64 `json:"sortino_ratio"`
 	AnnualizedVolatilityPct float64 `json:"annualized_volatility_pct"`
-	WinRatePct               float64 `json:"win_rate_pct"`
-	TotalTrades              int     `json:"total_trades"`
-	AvgTradePct              float64 `json:"avg_trade_pct"`
+	WinRatePct              float64 `json:"win_rate_pct"`
+	TotalTrades             int     `json:"total_trades"`
+	AvgTradePct             float64 `json:"avg_trade_pct"`
 }
 
 // RunBacktest runs a moving-average-cross backtest via
@@ -61,7 +61,7 @@ func RunBacktest(ctx context.Context, dsn string, riskStore *riskstorage.Store, 
 	if cfg.InitialCash == 0 {
 		cfg.InitialCash = 10000
 	}
-	if args.FeePct == 0 {
+	if cfg.FeePct == 0 {
 		cfg.FeePct = 0.001
 	}
 	if cfg.MAShortPeriod == 0 {

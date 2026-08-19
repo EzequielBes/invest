@@ -3,6 +3,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	riskstorage "risk-engine/storage"
@@ -20,10 +21,21 @@ type RunAnalysisArgs struct {
 	AssetNames map[string]string `json:"asset_names,omitempty" jsonschema:"optional symbol to full name mapping used by the news agent, e.g. {\"BTC\": \"Bitcoin\"}"`
 }
 
+// AnalysisResultItem is one agent's output for one asset (or, for
+// risk_context, for the portfolio as a whole — Asset is "" in that case),
+// as returned by run_analysis.
+type AnalysisResultItem struct {
+	AgentType  string          `json:"agent_type"`
+	Asset      string          `json:"asset"`
+	Narrative  string          `json:"narrative"`
+	Indicators json.RawMessage `json:"indicators,omitempty"`
+}
+
 // RunAnalysisResult is the run_analysis tool's output.
 type RunAnalysisResult struct {
-	AnalysisRunID string `json:"analysis_run_id"`
-	SuccessCount  int    `json:"success_count"`
+	AnalysisRunID string               `json:"analysis_run_id"`
+	SuccessCount  int                  `json:"success_count"`
+	Results       []AnalysisResultItem `json:"results"`
 }
 
 // RunAnalysis runs the analysis pipeline via analysis/runner.RunWithDSN.
@@ -50,9 +62,13 @@ func RunAnalysis(ctx context.Context, dsn string, riskStore *riskstorage.Store, 
 		timeframe = "1h"
 	}
 
-	runID, successCount, err := runner.RunWithDSN(ctx, dsn, riskStore, args.Assets, args.AssetNames, timeframe, agents)
-	if err != nil {
-		return RunAnalysisResult{AnalysisRunID: runID, SuccessCount: successCount}, err
+	runID, successCount, results, err := runner.RunWithDSN(ctx, dsn, riskStore, args.Assets, args.AssetNames, timeframe, agents)
+	items := make([]AnalysisResultItem, len(results))
+	for i, r := range results {
+		items[i] = AnalysisResultItem{AgentType: r.AgentType, Asset: r.Asset, Narrative: r.Narrative, Indicators: r.Indicators}
 	}
-	return RunAnalysisResult{AnalysisRunID: runID, SuccessCount: successCount}, nil
+	if err != nil {
+		return RunAnalysisResult{AnalysisRunID: runID, SuccessCount: successCount, Results: items}, err
+	}
+	return RunAnalysisResult{AnalysisRunID: runID, SuccessCount: successCount, Results: items}, nil
 }
