@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	riskstorage "risk-engine/storage"
 
 	"mcp/internal/storage"
 	"mcp/internal/tools"
@@ -30,6 +31,12 @@ func run(ctx context.Context) error {
 	}
 	defer store.Close()
 
+	riskStore, err := riskstorage.New(ctx, dsn)
+	if err != nil {
+		return fmt.Errorf("connect risk-engine storage: %w", err)
+	}
+	defer riskStore.Close()
+
 	server := mcp.NewServer(&mcp.Implementation{Name: "investment-platform", Version: "0.1.0"}, nil)
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -37,6 +44,22 @@ func run(ctx context.Context) error {
 		Description: "Get the most recently collected close price for an asset.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.GetLatestPriceArgs) (*mcp.CallToolResult, tools.GetLatestPriceResult, error) {
 		result, err := tools.GetLatestPrice(ctx, store, args)
+		return nil, result, err
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "get_risk_state",
+		Description: "Read the risk-engine's live operational status and configured limits.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ tools.GetRiskStateArgs) (*mcp.CallToolResult, tools.RiskStateResult, error) {
+		result, err := tools.GetRiskState(ctx, riskStore)
+		return nil, result, err
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "set_risk_state",
+		Description: "Manually set the risk-engine's live operational status (normal, paused, or kill_switch).",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.SetRiskStateArgs) (*mcp.CallToolResult, tools.RiskStateResult, error) {
+		result, err := tools.SetRiskState(ctx, riskStore, args)
 		return nil, result, err
 	})
 
