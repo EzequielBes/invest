@@ -1,5 +1,5 @@
-// strategist/cmd/strategist/main_test.go
-package main
+// strategist/runner/runner_test.go
+package runner
 
 import (
 	"context"
