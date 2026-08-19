@@ -138,6 +138,12 @@ func (e *BinanceExecutor) Execute(ctx context.Context, asset string, side risk.S
 			if statusErr != nil {
 				return Outcome{}, fmt.Errorf("executor: %s: cancel order: %w (status re-check also failed: %v)", asset, cancelErr, statusErr)
 			}
+			if refetched.Status == "NEW" || refetched.Status == "PARTIALLY_FILLED" {
+				// The order is genuinely still open — the cancel failure
+				// wasn't a race-window fill, it was real. Don't guess at
+				// a final state; nothing is safe to persist here.
+				return Outcome{}, fmt.Errorf("executor: %s: cancel order: %w (order still open per status re-check, not safe to treat as cancelled)", asset, cancelErr)
+			}
 			order = refetched
 		} else {
 			order = cancelled

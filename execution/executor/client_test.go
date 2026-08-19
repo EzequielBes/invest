@@ -151,3 +151,28 @@ func TestExecute_CancelFailsButRecheckShowsFillPersistsFill(t *testing.T) {
 		t.Errorf("saved = %+v, want one filled execution persisted", store.saved)
 	}
 }
+
+// TestExecute_CancelFailsAndOrderStillOpenReturnsError covers the
+// non-race case: CancelOrder fails for an ordinary reason (network blip,
+// rate limit) and the order genuinely is still open on the exchange. The
+// status re-check must not be trusted to mean "cancelled" here — Execute
+// should return a hard error and persist nothing, since the true final
+// state is unknown.
+func TestExecute_CancelFailsAndOrderStillOpenReturnsError(t *testing.T) {
+	binance := &fakeBinance{
+		placeOrder:      binanceclient.Order{Status: "NEW"},
+		statusSeq:       []binanceclient.Order{{Status: "NEW"}},
+		cancelErr:       errors.New("binance: rate limited"),
+		postCancelOrder: binanceclient.Order{OrderID: 5, ClientOrderID: "cid", Status: "PARTIALLY_FILLED", ExecutedQty: 0.4, AvgPrice: 100},
+	}
+	store := &fakeStore{}
+	e := &BinanceExecutor{binance: binance, store: store, pollInterval: time.Millisecond, fillTimeout: 3 * time.Millisecond}
+
+	_, err := e.Execute(context.Background(), "BTC", risk.SideBuy, 1.0, 100, "cid")
+	if err == nil {
+		t.Fatal("Execute: want error, got nil (order is still open, must not be reported as resolved)")
+	}
+	if len(store.saved) != 0 {
+		t.Errorf("saved = %+v, want nothing persisted for an unresolved order state", store.saved)
+	}
+}
