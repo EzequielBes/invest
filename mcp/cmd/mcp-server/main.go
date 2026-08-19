@@ -79,5 +79,13 @@ func run(ctx context.Context) error {
 		return nil, result, err
 	})
 
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "run_backtest",
+		Description: "Run a moving-average-cross backtest over a historical period, validated against the real risk engine, and return final metrics.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.RunBacktestArgs) (*mcp.CallToolResult, tools.RunBacktestResult, error) {
+		result, err := tools.RunBacktest(ctx, dsn, riskStore, args)
+		return nil, result, err
+	})
+
 	return server.Run(ctx, &mcp.StdioTransport{})
 }
