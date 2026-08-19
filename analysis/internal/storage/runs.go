@@ -112,3 +112,40 @@ func (s *Store) ResultsForTest(ctx context.Context, runID string) ([]PersistedRe
 	}
 	return results, rows.Err()
 }
+
+// AgentResult is one analysis_results row, including indicators — used by
+// production callers (e.g. the MCP server's run_analysis tool), unlike
+// the narrower test-only PersistedResult.
+type AgentResult struct {
+	AgentType  string
+	Asset      string
+	Indicators json.RawMessage
+	Narrative  string
+}
+
+// ResultsForRun reads persisted results (including indicators) in
+// creation order — used by production callers.
+func (s *Store) ResultsForRun(ctx context.Context, runID string) ([]AgentResult, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT agent_type, asset, indicators, narrative
+		FROM analysis_results
+		WHERE run_id = $1
+		ORDER BY created_at, id
+	`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []AgentResult
+	for rows.Next() {
+		var r AgentResult
+		var indicatorsRaw []byte
+		if err := rows.Scan(&r.AgentType, &r.Asset, &indicatorsRaw, &r.Narrative); err != nil {
+			return nil, err
+		}
+		r.Indicators = json.RawMessage(indicatorsRaw)
+		results = append(results, r)
+	}
+	return results, rows.Err()
+}

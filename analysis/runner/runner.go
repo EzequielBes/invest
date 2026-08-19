@@ -92,7 +92,7 @@ func record(ctx context.Context, store resultSaver, runID, agentType, asset stri
 		fmt.Fprintf(os.Stderr, "%s/%s: sem narrativa: %v\n", agentType, asset, out.Err)
 		return false, nil
 	}
-	fmt.Printf("%s/%s: %s\n", agentType, asset, out.Narrative)
+	fmt.Fprintf(os.Stderr, "%s/%s: %s\n", agentType, asset, out.Narrative)
 	return true, nil
 }
 
@@ -115,11 +115,19 @@ func abortRun(ctx context.Context, store *storage.Store, runID string, successCo
 // visibility). riskStore is still supplied by the caller since
 // risk-engine/storage is a public package, legal to import from
 // anywhere.
-func RunWithDSN(ctx context.Context, dsn string, riskStore *riskstorage.Store, assets []string, assetNames map[string]string, timeframe string, requestedAgents []string) (runID string, successCount int, err error) {
+func RunWithDSN(ctx context.Context, dsn string, riskStore *riskstorage.Store, assets []string, assetNames map[string]string, timeframe string, requestedAgents []string) (runID string, successCount int, results []storage.AgentResult, err error) {
 	store, err := storage.New(ctx, dsn)
 	if err != nil {
-		return "", 0, fmt.Errorf("connect analysis storage: %w", err)
+		return "", 0, nil, fmt.Errorf("connect analysis storage: %w", err)
 	}
 	defer store.Close()
-	return Run(ctx, store, riskStore, llm.NewAnthropicClient(), assets, assetNames, timeframe, requestedAgents)
+	runID, successCount, err = Run(ctx, store, riskStore, llm.NewAnthropicClient(), assets, assetNames, timeframe, requestedAgents)
+	if err != nil {
+		return runID, successCount, nil, err
+	}
+	results, resErr := store.ResultsForRun(ctx, runID)
+	if resErr != nil {
+		return runID, successCount, nil, fmt.Errorf("read back results: %w", resErr)
+	}
+	return runID, successCount, results, nil
 }
