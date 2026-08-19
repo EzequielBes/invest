@@ -12,9 +12,8 @@ import (
 
 	riskstorage "risk-engine/storage"
 
-	"simulation/internal/engine"
 	simstorage "simulation/internal/storage"
-	"simulation/internal/strategy"
+	"simulation/runner"
 )
 
 func main() {
@@ -45,44 +44,8 @@ func run(periodStartStr, periodEndStr, timeframesStr, drivingTF, assetsStr strin
 	if err != nil {
 		return fmt.Errorf("invalid -period-end: %w", err)
 	}
-	if !periodStart.Before(periodEnd) {
-		return fmt.Errorf("-period-start must be before -period-end")
-	}
-	if feePct < 0 {
-		return fmt.Errorf("-fee-pct must be >= 0")
-	}
 	timeframes := splitNonEmpty(timeframesStr)
-	if len(timeframes) == 0 {
-		return fmt.Errorf("-timeframes is required")
-	}
-	if drivingTF == "" {
-		return fmt.Errorf("-driving-timeframe is required")
-	}
-	found := false
-	for _, tf := range timeframes {
-		if tf == drivingTF {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return fmt.Errorf("-driving-timeframe %q must be one of -timeframes %v", drivingTF, timeframes)
-	}
 	assets := splitNonEmpty(assetsStr)
-	if len(assets) == 0 {
-		return fmt.Errorf("-assets is required")
-	}
-	if shortPeriod <= 0 || longPeriod <= 0 {
-		return fmt.Errorf("-ma-short-period and -ma-long-period must be > 0")
-	}
-	if shortPeriod >= longPeriod {
-		return fmt.Errorf("-ma-short-period must be < -ma-long-period")
-	}
-
-	strat := &strategy.MovingAverageCrossStrategy{
-		Asset: assets[0], Timeframe: drivingTF,
-		ShortPeriod: shortPeriod, LongPeriod: longPeriod, TradeValue: initialCash * 0.1,
-	}
 
 	ctx := context.Background()
 	dsn := os.Getenv("DATABASE_URL")
@@ -102,23 +65,16 @@ func run(periodStartStr, periodEndStr, timeframesStr, drivingTF, assetsStr strin
 	}
 	defer simStore.Close()
 
-	runID, err := engine.Run(ctx, riskStore, simStore, engine.Config{
-		StrategyName: "moving-average", Strategy: strat,
-		PeriodStart: periodStart, PeriodEnd: periodEnd,
-		Timeframes: timeframes, DrivingTimeframe: drivingTF, Assets: assets,
-		InitialCash: initialCash, FeePct: feePct,
+	runID, tradeCount, results, err := runner.RunBacktest(ctx, riskStore, simStore, runner.Config{
+		PeriodStart: periodStart, PeriodEnd: periodEnd, Timeframes: timeframes,
+		DrivingTimeframe: drivingTF, Assets: assets, InitialCash: initialCash, FeePct: feePct,
+		MAShortPeriod: shortPeriod, MALongPeriod: longPeriod,
 	})
 	if err != nil {
-		return fmt.Errorf("backtest run %s: %w", runID, err)
+		return err
 	}
-
-	tradeCount, err := simStore.TradeCount(ctx, runID)
-	if err != nil {
-		fmt.Printf("backtest run %s completed\n", runID)
-		fmt.Fprintf(os.Stderr, "warning: failed to fetch trade count for run %s: %v\n", runID, err)
-		return nil
-	}
-	fmt.Printf("backtest run %s completed (%d trade attempts recorded)\n", runID, tradeCount)
+	fmt.Printf("backtest run %s completed (%d trade attempts recorded, return %.2f%%, max drawdown %.2f%%, sharpe %.2f)\n",
+		runID, tradeCount, results.TotalReturnPct, results.MaxDrawdownPct, results.SharpeRatio)
 	return nil
 }
 
