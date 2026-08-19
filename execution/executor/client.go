@@ -118,13 +118,19 @@ func (e *BinanceExecutor) Execute(ctx context.Context, asset string, side risk.S
 		return Outcome{}, fmt.Errorf("executor: %s: place order: %w", asset, err)
 	}
 
+	// A poll failure here falls through to the cancel-and-classify logic
+	// below (same as a plain fill-timeout) instead of returning early —
+	// an early return would abandon a live order on the exchange with no
+	// cancel attempt and nothing persisted. order keeps its last known
+	// value since we only assign into it on a successful poll.
 	deadline := time.Now().Add(e.fillTimeout)
 	for order.Status != "FILLED" && time.Now().Before(deadline) {
 		time.Sleep(e.pollInterval)
-		order, err = e.binance.GetOrderStatus(ctx, asset, clientOrderID)
-		if err != nil {
-			return Outcome{}, fmt.Errorf("executor: %s: get order status: %w", asset, err)
+		next, statusErr := e.binance.GetOrderStatus(ctx, asset, clientOrderID)
+		if statusErr != nil {
+			break
 		}
+		order = next
 	}
 
 	status := "filled"

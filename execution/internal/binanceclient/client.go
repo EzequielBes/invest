@@ -33,7 +33,7 @@ type Client struct {
 // real testnet base URL.
 func New(apiKey, secret, baseURL string) *Client {
 	return &Client{
-		http:    &http.Client{},
+		http:    &http.Client{Timeout: 10 * time.Second},
 		limiter: rate.NewLimiter(rate.Limit(5), 10),
 		apiKey:  apiKey,
 		secret:  secret,

@@ -25,6 +25,11 @@ type fakeBinance struct {
 	// status re-check after a failed cancel (e.g. it filled in the race
 	// window between the last poll and the cancel attempt).
 	postCancelOrder binanceclient.Order
+	// pollErr, if set, makes GetOrderStatus fail every time it's called
+	// before CancelOrder — simulating a poll failure mid-loop. Once
+	// cancelCalls > 0, GetOrderStatus falls back to its normal
+	// postCancelOrder behavior (the status re-check after cancel).
+	pollErr error
 }
 
 func (f *fakeBinance) GetAccount(context.Context) (binanceclient.Account, error) {
@@ -38,6 +43,9 @@ func (f *fakeBinance) PlaceLimitOrder(context.Context, string, string, float64, 
 func (f *fakeBinance) GetOrderStatus(context.Context, string, string) (binanceclient.Order, error) {
 	if f.cancelCalls > 0 {
 		return f.postCancelOrder, nil
+	}
+	if f.pollErr != nil {
+		return binanceclient.Order{}, f.pollErr
 	}
 	o := f.statusSeq[f.statusIdx]
 	if f.statusIdx < len(f.statusSeq)-1 {
@@ -174,5 +182,34 @@ func TestExecute_CancelFailsAndOrderStillOpenReturnsError(t *testing.T) {
 	}
 	if len(store.saved) != 0 {
 		t.Errorf("saved = %+v, want nothing persisted for an unresolved order state", store.saved)
+	}
+}
+
+// TestExecute_PollFailureStillAttemptsCancel covers a GetOrderStatus
+// failure DURING polling (not the post-timeout cancel step) — this used
+// to return early, abandoning a live order on the exchange with no
+// cancel attempt and nothing persisted. Execute must instead fall
+// through into the same cancel-and-classify logic a fill-timeout gets.
+func TestExecute_PollFailureStillAttemptsCancel(t *testing.T) {
+	binance := &fakeBinance{
+		placeOrder: binanceclient.Order{Status: "NEW"},
+		pollErr:    errors.New("binance: connection reset"),
+		cancelOrder: binanceclient.Order{OrderID: 6, ClientOrderID: "cid", Status: "CANCELED", ExecutedQty: 0},
+	}
+	store := &fakeStore{}
+	e := &BinanceExecutor{binance: binance, store: store, pollInterval: time.Millisecond, fillTimeout: 5 * time.Millisecond}
+
+	outcome, err := e.Execute(context.Background(), "BTC", risk.SideBuy, 1.0, 100, "cid")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if binance.cancelCalls != 1 {
+		t.Errorf("cancelCalls = %d, want 1 (a poll failure must still attempt cancel, not abandon the order)", binance.cancelCalls)
+	}
+	if outcome.Status != "cancelled" || outcome.FilledQuantity != 0 {
+		t.Errorf("outcome = %+v, want cancelled with 0 filled", outcome)
+	}
+	if len(store.saved) != 1 || store.saved[0].Status != "cancelled" {
+		t.Errorf("saved = %+v, want one cancelled execution persisted", store.saved)
 	}
 }
