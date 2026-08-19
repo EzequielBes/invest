@@ -63,5 +63,13 @@ func run(ctx context.Context) error {
 		return nil, result, err
 	})
 
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "run_analysis",
+		Description: "Run the analysis pipeline (technical, derivatives, news, risk-context agents) for one or more assets, producing an analysis_run_id for run_strategist to consume.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.RunAnalysisArgs) (*mcp.CallToolResult, tools.RunAnalysisResult, error) {
+		result, err := tools.RunAnalysis(ctx, dsn, riskStore, args)
+		return nil, result, err
+	})
+
 	return server.Run(ctx, &mcp.StdioTransport{})
 }
