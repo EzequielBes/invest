@@ -62,7 +62,10 @@ func run(ctx context.Context, runID, assetsStr, timeframe string, cash float64, 
 	}
 	defer riskStore.Close()
 
-	client := llm.NewAnthropicClient()
+	client, err := llm.NewClient()
+	if err != nil {
+		return err
+	}
 	return runner.Run(ctx, store, riskStore, client, runID, assets, timeframe, cash, positions, dailyLoss, weeklyLoss, drawdown, consecutiveLosses)
 }
 

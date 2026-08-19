@@ -168,8 +168,12 @@ func RunWithDSN(ctx context.Context, dsn string, riskStore *riskstorage.Store, a
 		return nil, fmt.Errorf("connect strategist storage: %w", err)
 	}
 	defer store.Close()
+	client, err := llm.NewClient()
+	if err != nil {
+		return nil, err
+	}
 	startedAt := time.Now().UTC()
-	if err := Run(ctx, store, riskStore, llm.NewAnthropicClient(), analysisRunID, assets, timeframe, cash, positions, dailyLoss, weeklyLoss, drawdown, consecutiveLosses); err != nil {
+	if err := Run(ctx, store, riskStore, client, analysisRunID, assets, timeframe, cash, positions, dailyLoss, weeklyLoss, drawdown, consecutiveLosses); err != nil {
 		return nil, err
 	}
 	decisions, err := store.DecisionsForRun(ctx, analysisRunID)
