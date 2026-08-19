@@ -121,7 +121,11 @@ func RunWithDSN(ctx context.Context, dsn string, riskStore *riskstorage.Store, a
 		return "", 0, nil, fmt.Errorf("connect analysis storage: %w", err)
 	}
 	defer store.Close()
-	runID, successCount, err = Run(ctx, store, riskStore, llm.NewAnthropicClient(), assets, assetNames, timeframe, requestedAgents)
+	client, err := llm.NewClient()
+	if err != nil {
+		return "", 0, nil, err
+	}
+	runID, successCount, err = Run(ctx, store, riskStore, client, assets, assetNames, timeframe, requestedAgents)
 	if err != nil {
 		return runID, successCount, nil, err
 	}

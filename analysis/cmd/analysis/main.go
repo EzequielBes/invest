@@ -61,7 +61,11 @@ func run(ctx context.Context, assetsStr, assetNamesStr, timeframe, agentsStr str
 		return fmt.Errorf("connect risk-engine storage: %w", err)
 	}
 	defer riskStore.Close()
-	runID, successCount, err := runner.Run(ctx, store, riskStore, llm.NewAnthropicClient(), assets, assetNames, timeframe, requestedAgents)
+	client, err := llm.NewClient()
+	if err != nil {
+		return err
+	}
+	runID, successCount, err := runner.Run(ctx, store, riskStore, client, assets, assetNames, timeframe, requestedAgents)
 	if err != nil {
 		return err
 	}
