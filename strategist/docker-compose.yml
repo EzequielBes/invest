@@ -5,6 +5,7 @@ services:
     volumes:
       - .:/app
       - ../risk-engine:/risk-engine
+      - ../execution:/execution
       - go-mod-cache:/go/pkg/mod
     environment:
       DATABASE_URL: postgres://marketdata:marketdata@timescaledb:5432/marketdata?sslmode=disable

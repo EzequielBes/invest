@@ -4,11 +4,14 @@ package strategist
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
 	"risk-engine/risk"
 	riskstorage "risk-engine/storage"
+
+	"execution/executor"
 
 	"strategist/internal/llm"
 	"strategist/internal/storage"
@@ -17,30 +20,43 @@ import (
 const systemPrompt = `Você é um estrategista de investimentos em criptomoedas. Você recebe indicadores técnicos, de derivativos, de notícias e de contexto de risco sobre um ativo, e decide se deve comprar, vender ou manter a posição atual. Nunca sugira sizing_pct acima de 0.25 (25% do portfólio) numa única operação. Responda sempre usando a ferramenta record_decision.`
 
 // Outcome is what deciding on one asset produces. Risk is nil when
-// Decision.Side is "hold" (risk.Evaluate is never called for a hold) or
-// when risk.Evaluate itself failed — RiskErr is set in that second case
-// so the caller can log it while still persisting the LLM's decision.
+// Decision.Side is "hold", when the sizing clamp reduces Quantity to
+// <= 0 (nothing to propose), or when risk.Evaluate itself failed —
+// RiskErr is set in that last case so the caller can log it while still
+// persisting the LLM's decision. Execution is nil whenever Risk is nil,
+// whenever risk.Evaluate rejected the proposal, or when the execution
+// call itself failed — ExecutionErr is set in that last case, same
+// isolated-failure treatment as RiskErr.
 type Outcome struct {
-	Decision llm.Decision
-	Quantity float64
-	Value    float64
-	Risk     *risk.Decision
-	RiskErr  error
+	Decision     llm.Decision
+	Quantity     float64
+	Value        float64
+	Risk         *risk.Decision
+	RiskErr      error
+	Execution    *executor.Outcome
+	ExecutionErr error
 }
 
 // Decide asks the LLM for a decision about asset from its three per-asset
 // analysis results (technical, derivatives, news) plus the shared
-// risk-context result, then — for buy/sell — sizes the proposed operation
-// against portfolioValue/price and validates it via risk.Evaluate.
+// risk-context result, sizes the proposed operation against
+// portfolioValue/price (clamped to the actually-held quantity for a
+// sell), validates it via risk.Evaluate, and — if approved — executes it
+// for real via execClient using decisionID as the exchange's client
+// order ID (so a retry of the same decision never places a duplicate
+// order).
 //
 // Returns an error only when there is no decision at all to persist:
-// missing analysis data for asset, or an LLM failure. A risk.Evaluate
-// failure is reported through Outcome.RiskErr instead of the return
-// error, since the LLM's decision is still worth keeping in that case.
+// missing analysis data for asset, or an LLM failure. A risk.Evaluate or
+// execution failure is reported through Outcome.RiskErr/ExecutionErr
+// instead of the return error, since the LLM's decision is still worth
+// keeping in both cases.
 func Decide(
 	ctx context.Context,
 	riskStore *riskstorage.Store,
-	client llm.Client,
+	llmClient llm.Client,
+	execClient executor.Client,
+	decisionID string,
 	asset string,
 	perAsset []storage.AgentResult,
 	riskContext storage.AgentResult,
@@ -52,7 +68,7 @@ func Decide(
 		return Outcome{}, err
 	}
 
-	decision, err := client.Decide(ctx, systemPrompt, userPrompt)
+	decision, err := llmClient.Decide(ctx, systemPrompt, userPrompt)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("strategist: %s: decide: %w", asset, err)
 	}
@@ -63,7 +79,14 @@ func Decide(
 	}
 
 	outcome.Quantity = decision.SizingPct * portfolioValue / price
+	if decision.Side == "sell" {
+		outcome.Quantity = math.Min(outcome.Quantity, portfolio.Positions[asset].Quantity)
+	}
+	if outcome.Quantity <= 0 {
+		return outcome, nil
+	}
 	outcome.Value = outcome.Quantity * price
+
 	proposed := risk.ProposedOperation{
 		Asset:    asset,
 		Side:     risk.Side(decision.Side),
@@ -76,6 +99,17 @@ func Decide(
 		return outcome, nil
 	}
 	outcome.Risk = &riskDecision
+
+	if !riskDecision.Allowed {
+		return outcome, nil
+	}
+
+	execOutcome, err := execClient.Execute(ctx, asset, risk.Side(decision.Side), outcome.Quantity, price, decisionID)
+	if err != nil {
+		outcome.ExecutionErr = fmt.Errorf("strategist: %s: execute: %w", asset, err)
+		return outcome, nil
+	}
+	outcome.Execution = &execOutcome
 	return outcome, nil
 }
 

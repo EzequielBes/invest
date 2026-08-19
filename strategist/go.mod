@@ -10,7 +10,10 @@ require (
 	risk-engine v0.0.0-00010101000000-000000000000
 )
 
+require golang.org/x/time v0.10.0 // indirect
+
 require (
+	execution v0.0.0-00010101000000-000000000000
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20221227161230-091c0ba34f0a // indirect
 	github.com/jackc/puddle/v2 v2.2.1 // indirect
@@ -24,3 +27,5 @@ require (
 )
 
 replace risk-engine => ../risk-engine
+
+replace execution => ../execution

@@ -11,6 +11,8 @@ import (
 	"risk-engine/risk"
 	riskstorage "risk-engine/storage"
 
+	"execution/executor"
+
 	"strategist/internal/llm"
 	"strategist/internal/storage"
 )
@@ -54,6 +56,21 @@ func (f *fakeLLMClient) Decide(context.Context, string, string) (llm.Decision, e
 	return f.decision, f.err
 }
 
+type fakeExecClient struct {
+	outcome executor.Outcome
+	err     error
+	calls   int
+}
+
+func (f *fakeExecClient) FetchPortfolio(context.Context) (float64, map[string]float64, error) {
+	return 0, nil, nil
+}
+
+func (f *fakeExecClient) Execute(context.Context, string, risk.Side, float64, float64, string) (executor.Outcome, error) {
+	f.calls++
+	return f.outcome, f.err
+}
+
 func validPerAsset() []storage.AgentResult {
 	return []storage.AgentResult{
 		{AgentType: "technical", Asset: "BTC", Narrative: "n1"},
@@ -62,18 +79,22 @@ func validPerAsset() []storage.AgentResult {
 	}
 }
 
-func TestDecide_HoldNeverCallsRiskEvaluate(t *testing.T) {
+func TestDecide_HoldNeverCallsRiskEvaluateOrExecute(t *testing.T) {
 	client := &fakeLLMClient{decision: llm.Decision{Side: "hold", Rationale: "wait and see"}}
 
-	// riskStore is nil on purpose: a hold must return before touching it —
-	// passing nil here turns any accidental risk.Evaluate call into an
-	// immediate nil-pointer panic, which is exactly the assertion we want.
-	outcome, err := Decide(context.Background(), nil, client, "BTC", validPerAsset(), storage.AgentResult{}, riskPortfolioState(), 10000, 100)
+	// riskStore and execClient are nil on purpose: a hold must return
+	// before touching either — passing nil turns any accidental call into
+	// an immediate nil-pointer panic, which is exactly the assertion we
+	// want.
+	outcome, err := Decide(context.Background(), nil, client, nil, "decision-1", "BTC", validPerAsset(), storage.AgentResult{}, riskPortfolioState(), 10000, 100)
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
 	if outcome.Risk != nil || outcome.RiskErr != nil {
 		t.Errorf("outcome = %+v, want no risk evaluation for a hold", outcome)
+	}
+	if outcome.Execution != nil || outcome.ExecutionErr != nil {
+		t.Errorf("outcome = %+v, want no execution for a hold", outcome)
 	}
 	if outcome.Quantity != 0 || outcome.Value != 0 {
 		t.Errorf("outcome = %+v, want zero quantity/value for a hold", outcome)
@@ -83,7 +104,7 @@ func TestDecide_HoldNeverCallsRiskEvaluate(t *testing.T) {
 func TestDecide_LLMFailureReturnsError(t *testing.T) {
 	client := &fakeLLMClient{err: errors.New("rate limited")}
 
-	_, err := Decide(context.Background(), nil, client, "BTC", validPerAsset(), storage.AgentResult{}, riskPortfolioState(), 10000, 100)
+	_, err := Decide(context.Background(), nil, client, nil, "decision-1", "BTC", validPerAsset(), storage.AgentResult{}, riskPortfolioState(), 10000, 100)
 	if err == nil {
 		t.Fatal("expected an error when the LLM call fails, got nil")
 	}
@@ -93,12 +114,12 @@ func TestDecide_MissingAnalysisDataReturnsErrorBeforeCallingLLM(t *testing.T) {
 	client := &fakeLLMClient{decision: llm.Decision{Side: "hold"}}
 	incomplete := []storage.AgentResult{{AgentType: "technical", Asset: "BTC", Narrative: "n1"}}
 
-	if _, err := Decide(context.Background(), nil, client, "BTC", incomplete, storage.AgentResult{}, riskPortfolioState(), 10000, 100); err == nil {
+	if _, err := Decide(context.Background(), nil, client, nil, "decision-1", "BTC", incomplete, storage.AgentResult{}, riskPortfolioState(), 10000, 100); err == nil {
 		t.Fatal("expected an error for incomplete analysis data, got nil")
 	}
 }
 
-func TestDecide_RiskEvaluationFailureIsReportedInOutcome(t *testing.T) {
+func TestDecide_RiskEvaluationFailureIsReportedInOutcomeAndSkipsExecution(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("TEST_DATABASE_URL not set, skipping integration test")
@@ -112,12 +133,65 @@ func TestDecide_RiskEvaluationFailureIsReportedInOutcome(t *testing.T) {
 	riskStore.Close()
 
 	client := &fakeLLMClient{decision: llm.Decision{Side: "buy", SizingPct: 0.1, Rationale: "persist despite risk failure"}}
-	outcome, err := Decide(context.Background(), riskStore, client, "TESTASSETRISKOUTCOME", validPerAsset(), storage.AgentResult{}, riskPortfolioState(), 10000, 100)
+	// execClient is nil on purpose: a risk.Evaluate failure must return
+	// before ever calling Execute.
+	outcome, err := Decide(context.Background(), riskStore, client, nil, "decision-1", "TESTASSETRISKOUTCOME", validPerAsset(), storage.AgentResult{}, riskPortfolioState(), 10000, 100)
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
 	if outcome.Risk != nil || outcome.RiskErr == nil {
 		t.Fatalf("outcome = %+v, want Risk=nil and RiskErr set", outcome)
+	}
+	if outcome.Execution != nil || outcome.ExecutionErr != nil {
+		t.Errorf("outcome = %+v, want no execution attempted after a risk.Evaluate failure", outcome)
+	}
+}
+
+func TestDecide_SellClampsToHeldQuantity(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not set, skipping integration test")
+	}
+	riskStore, err := riskstorage.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("riskstorage.New: %v", err)
+	}
+	// Closed on purpose, same reasoning as the risk-evaluation-failure
+	// test above: outcome.Quantity is computed (and clamped) before
+	// risk.Evaluate runs, so a controlled risk.Evaluate failure afterward
+	// doesn't affect what's being asserted here.
+	riskStore.Close()
+
+	// sizing_pct=0.5 against a 10000 portfolio at price=100 would propose
+	// selling 50 units — but only 2 are actually held.
+	client := &fakeLLMClient{decision: llm.Decision{Side: "sell", SizingPct: 0.5, Rationale: "take profit"}}
+	portfolio := riskPortfolioState()
+	portfolio.Positions = map[string]risk.Position{"BTC": {Asset: "BTC", Quantity: 2, Value: 200}}
+
+	outcome, err := Decide(context.Background(), riskStore, client, nil, "decision-1", "BTC", validPerAsset(), storage.AgentResult{}, portfolio, 10000, 100)
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if outcome.Quantity != 2 {
+		t.Errorf("Quantity = %v, want 2 (clamped to the held position)", outcome.Quantity)
+	}
+}
+
+func TestDecide_SellWithNoPositionClampsToZeroAndSkipsEverything(t *testing.T) {
+	client := &fakeLLMClient{decision: llm.Decision{Side: "sell", SizingPct: 0.5, Rationale: "take profit"}}
+	execClient := &fakeExecClient{}
+
+	// riskStore is nil on purpose: a clamp to zero must skip risk.Evaluate
+	// and Execute entirely — nothing to propose, nothing to trade.
+	outcome, err := Decide(context.Background(), nil, client, execClient, "decision-1", "BTC", validPerAsset(), storage.AgentResult{}, riskPortfolioState(), 10000, 100)
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if outcome.Quantity != 0 {
+		t.Errorf("Quantity = %v, want 0 (no position held)", outcome.Quantity)
+	}
+	if execClient.calls != 0 {
+		t.Errorf("execClient.calls = %d, want 0", execClient.calls)
 	}
 }
 
