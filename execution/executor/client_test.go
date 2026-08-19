@@ -3,6 +3,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -17,7 +18,13 @@ type fakeBinance struct {
 	statusSeq   []binanceclient.Order
 	statusIdx   int
 	cancelOrder binanceclient.Order
+	cancelErr   error
 	cancelCalls int
+	// postCancelOrder is returned by GetOrderStatus once CancelOrder has
+	// been called — simulates the order's true state as discovered by the
+	// status re-check after a failed cancel (e.g. it filled in the race
+	// window between the last poll and the cancel attempt).
+	postCancelOrder binanceclient.Order
 }
 
 func (f *fakeBinance) GetAccount(context.Context) (binanceclient.Account, error) {
@@ -29,6 +36,9 @@ func (f *fakeBinance) PlaceLimitOrder(context.Context, string, string, float64, 
 }
 
 func (f *fakeBinance) GetOrderStatus(context.Context, string, string) (binanceclient.Order, error) {
+	if f.cancelCalls > 0 {
+		return f.postCancelOrder, nil
+	}
 	o := f.statusSeq[f.statusIdx]
 	if f.statusIdx < len(f.statusSeq)-1 {
 		f.statusIdx++
@@ -38,6 +48,9 @@ func (f *fakeBinance) GetOrderStatus(context.Context, string, string) (binancecl
 
 func (f *fakeBinance) CancelOrder(context.Context, string, string) (binanceclient.Order, error) {
 	f.cancelCalls++
+	if f.cancelErr != nil {
+		return binanceclient.Order{}, f.cancelErr
+	}
 	return f.cancelOrder, nil
 }
 
@@ -109,5 +122,32 @@ func TestExecute_TimeoutWithPartialFillReportsPartial(t *testing.T) {
 	}
 	if outcome.Status != "partial" || outcome.FilledQuantity != 0.3 {
 		t.Errorf("outcome = %+v, want partial with 0.3 filled", outcome)
+	}
+}
+
+// TestExecute_CancelFailsButRecheckShowsFillPersistsFill covers the race
+// where the order fills on the exchange between the last poll and the
+// cancel attempt: CancelOrder fails (Binance rejects cancelling an
+// already-filled order), and Execute must fall back to one GetOrderStatus
+// re-check rather than discarding the fill as an unpersisted error.
+func TestExecute_CancelFailsButRecheckShowsFillPersistsFill(t *testing.T) {
+	binance := &fakeBinance{
+		placeOrder:      binanceclient.Order{Status: "NEW"},
+		statusSeq:       []binanceclient.Order{{Status: "NEW"}},
+		cancelErr:       errors.New("binance: order already filled, cannot cancel"),
+		postCancelOrder: binanceclient.Order{OrderID: 4, ClientOrderID: "cid", Status: "FILLED", ExecutedQty: 1.0, AvgPrice: 100},
+	}
+	store := &fakeStore{}
+	e := &BinanceExecutor{binance: binance, store: store, pollInterval: time.Millisecond, fillTimeout: 3 * time.Millisecond}
+
+	outcome, err := e.Execute(context.Background(), "BTC", risk.SideBuy, 1.0, 100, "cid")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if outcome.Status != "filled" || outcome.FilledQuantity != 1.0 {
+		t.Errorf("outcome = %+v, want filled 1.0 (recovered from cancel failure via status re-check)", outcome)
+	}
+	if len(store.saved) != 1 || store.saved[0].Status != "filled" {
+		t.Errorf("saved = %+v, want one filled execution persisted", store.saved)
 	}
 }

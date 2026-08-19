@@ -129,12 +129,22 @@ func (e *BinanceExecutor) Execute(ctx context.Context, asset string, side risk.S
 
 	status := "filled"
 	if order.Status != "FILLED" {
-		cancelled, err := e.binance.CancelOrder(ctx, asset, clientOrderID)
-		if err != nil {
-			return Outcome{}, fmt.Errorf("executor: %s: cancel order: %w", asset, err)
+		cancelled, cancelErr := e.binance.CancelOrder(ctx, asset, clientOrderID)
+		if cancelErr != nil {
+			// Cancel can fail because the order filled in the race window
+			// between our last poll and this call — re-check status once
+			// before giving up, so a real fill is never silently lost.
+			refetched, statusErr := e.binance.GetOrderStatus(ctx, asset, clientOrderID)
+			if statusErr != nil {
+				return Outcome{}, fmt.Errorf("executor: %s: cancel order: %w (status re-check also failed: %v)", asset, cancelErr, statusErr)
+			}
+			order = refetched
+		} else {
+			order = cancelled
 		}
-		order = cancelled
-		if order.ExecutedQty > 0 {
+		if order.Status == "FILLED" {
+			status = "filled"
+		} else if order.ExecutedQty > 0 {
 			status = "partial"
 		} else {
 			status = "cancelled"
