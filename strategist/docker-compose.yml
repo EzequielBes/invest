@@ -13,6 +13,8 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       LLM_PRIMARY_PROVIDER: ${LLM_PRIMARY_PROVIDER:-}
+      BINANCE_API_KEY: ${BINANCE_API_KEY:-}
+      BINANCE_API_SECRET: ${BINANCE_API_SECRET:-}
     networks:
       - market-data_default
     command: ["sleep", "infinity"]
