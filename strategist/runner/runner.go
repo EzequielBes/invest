@@ -150,3 +150,26 @@ func report(asset string, outcome strategist.Outcome) {
 	}
 	fmt.Printf("%s: %s %.6f (%s) — %s\n", asset, outcome.Decision.Side, outcome.Quantity, status, outcome.Decision.Rationale)
 }
+
+// RunWithDSN connects its own storage using dsn, calls Run, then reads
+// back the decisions it persisted (Run itself only returns error) — same
+// cross-module-visibility reason as analysis/runner.RunWithDSN (sub-project
+// 6, Task 6): callers outside this module can't import
+// strategist/internal/storage or strategist/internal/llm directly, so
+// this function is the module's public entry point for exactly that kind
+// of caller — it returns []storage.Decision, which the caller (mcp) can
+// range over and read fields from without ever importing
+// strategist/internal/storage itself (Go's internal-package rule blocks
+// the *import*, not the use of an already-typed value obtained through a
+// legal call like this one).
+func RunWithDSN(ctx context.Context, dsn string, riskStore *riskstorage.Store, analysisRunID string, assets []string, timeframe string, cash float64, positions map[string]float64, dailyLoss, weeklyLoss, drawdown float64, consecutiveLosses int) ([]storage.Decision, error) {
+	store, err := storage.New(ctx, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("connect strategist storage: %w", err)
+	}
+	defer store.Close()
+	if err := Run(ctx, store, riskStore, llm.NewAnthropicClient(), analysisRunID, assets, timeframe, cash, positions, dailyLoss, weeklyLoss, drawdown, consecutiveLosses); err != nil {
+		return nil, err
+	}
+	return store.DecisionsForRun(ctx, analysisRunID)
+}

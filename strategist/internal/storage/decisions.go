@@ -51,6 +51,17 @@ func (s *Store) SaveDecision(ctx context.Context, d Decision) error {
 // DecisionsForTest reads persisted decisions for a run, in insertion
 // order — used by tests.
 func (s *Store) DecisionsForTest(ctx context.Context, runID string) ([]Decision, error) {
+	return s.decisionsForRun(ctx, runID)
+}
+
+// DecisionsForRun reads persisted decisions for an analysis run, in
+// creation order — used by production callers (e.g. the MCP server's
+// run_strategist tool, which reads back what Run just persisted).
+func (s *Store) DecisionsForRun(ctx context.Context, analysisRunID string) ([]Decision, error) {
+	return s.decisionsForRun(ctx, analysisRunID)
+}
+
+func (s *Store) decisionsForRun(ctx context.Context, runID string) ([]Decision, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, analysis_run_id, asset, side, confidence, sizing_pct, rationale,
 		       proposed_quantity, proposed_value, risk_allowed, risk_reasons, created_at
