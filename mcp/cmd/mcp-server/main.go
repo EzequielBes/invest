@@ -71,5 +71,13 @@ func run(ctx context.Context) error {
 		return nil, result, err
 	})
 
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "run_strategist",
+		Description: "Decide buy/sell/hold for one or more assets from an existing analysis_run_id, validated against the real risk engine. Never executes a real order.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.RunStrategistArgs) (*mcp.CallToolResult, tools.RunStrategistResult, error) {
+		result, err := tools.RunStrategist(ctx, dsn, riskStore, args)
+		return nil, result, err
+	})
+
 	return server.Run(ctx, &mcp.StdioTransport{})
 }
