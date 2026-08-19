@@ -8,6 +8,7 @@ services:
       - ../analysis:/analysis
       - ../strategist:/strategist
       - ../simulation:/simulation
+      - ../execution:/execution
       - go-mod-cache:/go/pkg/mod
     environment:
       DATABASE_URL: postgres://marketdata:marketdata@timescaledb:5432/marketdata?sslmode=disable

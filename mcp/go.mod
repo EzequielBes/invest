@@ -14,6 +14,7 @@ require (
 )
 
 require (
+	execution v0.0.0-00010101000000-000000000000 // indirect
 	github.com/anthropics/anthropic-sdk-go v1.9.0 // indirect
 	github.com/google/jsonschema-go v0.3.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -29,6 +30,7 @@ require (
 	golang.org/x/crypto v0.32.0 // indirect
 	golang.org/x/sync v0.10.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
+	golang.org/x/time v0.10.0 // indirect
 )
 
 replace risk-engine => ../risk-engine
@@ -38,3 +40,5 @@ replace analysis => ../analysis
 replace strategist => ../strategist
 
 replace simulation => ../simulation
+
+replace execution => ../execution
