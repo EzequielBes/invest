@@ -80,6 +80,30 @@ func TestNewClient_SingleProviderNoFallbackWrapper(t *testing.T) {
 	}
 }
 
+func TestNewClient_BothProvidersReturnsFallbackClient(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	client, err := NewClient()
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, ok := client.(*FallbackClient); !ok {
+		t.Fatalf("client = %T, want *FallbackClient", client)
+	}
+}
+
+func TestNewClient_OpenAIOnlyNoFallbackWrapper(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	client, err := NewClient()
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, ok := client.(*OpenAIClient); !ok {
+		t.Fatalf("client = %T, want *OpenAIClient", client)
+	}
+}
+
 func TestResolvePrimary_DefaultsToAnthropic(t *testing.T) {
 	t.Setenv("LLM_PRIMARY_PROVIDER", "")
 	primary, _ := resolvePrimary()

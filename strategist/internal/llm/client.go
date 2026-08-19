@@ -1,4 +1,3 @@
-// strategist/internal/llm/client.go
 package llm
 
 import (

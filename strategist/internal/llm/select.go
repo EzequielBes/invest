@@ -1,4 +1,3 @@
-// strategist/internal/llm/select.go
 package llm
 
 import (

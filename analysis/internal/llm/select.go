@@ -1,4 +1,3 @@
-// analysis/internal/llm/select.go
 package llm
 
 import (
