@@ -28,3 +28,9 @@ func TestParsePositions_Empty(t *testing.T) {
 		t.Fatalf("positions = %#v, want empty", positions)
 	}
 }
+
+func TestParsePositions_WhitespaceOnlyEntryIsRejected(t *testing.T) {
+	if _, err := parsePositions(" : "); err == nil {
+		t.Fatal("expected an error for a whitespace-only position entry, got nil")
+	}
+}

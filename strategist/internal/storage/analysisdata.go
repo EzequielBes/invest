@@ -17,15 +17,15 @@ type AgentResult struct {
 	Narrative  string
 }
 
-// ResultsForRun returns every analysis_results row for runID — a run
-// typically has only a handful of rows (a few assets times up to four
-// agents), so callers group by asset/agent_type in memory rather than
-// querying per asset.
+// ResultsForRun returns every analysis_results row for runID, oldest first.
+// The ordering makes the caller's last risk_context selection deterministic
+// when a run has more than one such row.
 func (s *Store) ResultsForRun(ctx context.Context, runID string) ([]AgentResult, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT agent_type, asset, indicators, narrative
 		FROM analysis_results
 		WHERE run_id = $1
+		ORDER BY created_at ASC, id ASC
 	`, runID)
 	if err != nil {
 		return nil, err

@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -91,11 +93,29 @@ func seedCandle(t *testing.T, store *storage.Store, symbol string, price float64
 	})
 }
 
+// seedQualityCandles creates the 1m history required by risk-engine quality
+// checks. Flat prices keep volatility at zero; quote volume exceeds the seeded
+// minimum-liquidity limit.
+func seedQualityCandles(t *testing.T, store *storage.Store, symbol string, price float64) {
+	t.Helper()
+	for i := 59; i >= 0; i-- {
+		execSQL(t, store, `
+			INSERT INTO candles (exchange, symbol, timeframe, ts, open, high, low, close, volume)
+			VALUES ('binance', $1, '1m', now() - ($2 * interval '1 minute'), $3, $3, $3, $3, 2000)
+		`, symbol, i, price)
+	}
+	t.Cleanup(func() {
+		execSQLIgnoreError(store, `DELETE FROM candles WHERE exchange = 'binance' AND symbol = $1 AND timeframe = '1m'`, symbol)
+	})
+}
+
 // Fake asset symbols for these tests — never real ones (see seedCandle).
 const (
 	testAssetBuy        = "TESTASSETBUY"
 	testAssetHold       = "TESTASSETHOLD"
 	testAssetIncomplete = "TESTASSETINCOMPLETE"
+	testAssetApproved   = "TESTASSETAPPROVED"
+	testAssetRiskError  = "TESTASSETRISKERROR"
 )
 
 // execSQL is a tiny helper so fixtures above can run arbitrary SQL through
@@ -245,4 +265,83 @@ func TestRun_ZeroPortfolioValueFailsTheWholeRun(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error when cash and positions are both zero/unset, got nil")
 	}
+}
+
+func TestRun_BuyDecisionCanBeApprovedAndPersisted(t *testing.T) {
+	store, riskStore := testStores(t)
+	ctx := context.Background()
+	runID := uuid.NewString()
+	seedAnalysisRun(t, store, runID, testAssetApproved, true)
+	seedCandle(t, store, testAssetApproved, 100)
+	seedQualityCandles(t, store, testAssetApproved, 100)
+	t.Cleanup(func() {
+		store.DeleteDecisionsForRunForTest(ctx, runID)
+		execSQLIgnoreError(store, `DELETE FROM risk_decisions WHERE asset = $1`, testAssetApproved)
+	})
+
+	client := &fakeLLMClient{decision: llm.Decision{Side: "buy", Confidence: 0.8, SizingPct: 0.1, Rationale: "validated setup"}}
+	if err := Run(ctx, store, riskStore, client, runID, []string{testAssetApproved}, "1h", 10000, nil, 0, 0, 0, 0); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	decisions, err := store.DecisionsForTest(ctx, runID)
+	if err != nil {
+		t.Fatalf("DecisionsForTest: %v", err)
+	}
+	if len(decisions) != 1 || decisions[0].RiskAllowed == nil || !*decisions[0].RiskAllowed {
+		t.Fatalf("decisions = %+v, want one risk-approved decision", decisions)
+	}
+}
+
+func TestRun_RiskEvaluationFailureStillPersistsDecision(t *testing.T) {
+	store, riskStore := testStores(t)
+	ctx := context.Background()
+	runID := uuid.NewString()
+	seedAnalysisRun(t, store, runID, testAssetRiskError, true)
+	seedCandle(t, store, testAssetRiskError, 100)
+	t.Cleanup(func() { store.DeleteDecisionsForRunForTest(ctx, runID) })
+
+	// A closed pool forces risk.Evaluate to fail after the LLM decision is made.
+	riskStore.Close()
+	client := &fakeLLMClient{decision: llm.Decision{Side: "buy", Confidence: 0.8, SizingPct: 0.1, Rationale: "keep the LLM decision"}}
+	if err := Run(ctx, store, riskStore, client, runID, []string{testAssetRiskError}, "1h", 10000, nil, 0, 0, 0, 0); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	decisions, err := store.DecisionsForTest(ctx, runID)
+	if err != nil {
+		t.Fatalf("DecisionsForTest: %v", err)
+	}
+	if len(decisions) != 1 || decisions[0].RiskAllowed != nil {
+		t.Fatalf("decisions = %+v, want persisted decision with RiskAllowed=nil", decisions)
+	}
+}
+
+func TestRun_UsesNewestRiskContext(t *testing.T) {
+	store, riskStore := testStores(t)
+	ctx := context.Background()
+	runID := uuid.NewString()
+	seedAnalysisRun(t, store, runID, testAssetHold, true)
+	seedCandle(t, store, testAssetHold, 100)
+	t.Cleanup(func() { store.DeleteDecisionsForRunForTest(ctx, runID) })
+	execSQL(t, store, `
+		INSERT INTO analysis_results (id, run_id, agent_type, asset, indicators, narrative, created_at)
+		VALUES ($1, $2, 'risk_context', '', $3, 'newest risk context', $4)
+	`, uuid.NewString(), runID, jsonObj(t, map[string]any{"risk_status": "paused"}), time.Now().UTC().Add(time.Second))
+
+	client := &capturingLLMClient{decision: llm.Decision{Side: "hold", Rationale: "wait"}}
+	if err := Run(ctx, store, riskStore, client, runID, []string{testAssetHold}, "1h", 10000, nil, 0, 0, 0, 0); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if client.userPrompt == "" || !strings.Contains(client.userPrompt, "newest risk context") {
+		t.Fatalf("prompt = %q, want newest risk context", client.userPrompt)
+	}
+}
+
+type capturingLLMClient struct {
+	decision   llm.Decision
+	userPrompt string
+}
+
+func (f *capturingLLMClient) Decide(_ context.Context, _, userPrompt string) (llm.Decision, error) {
+	f.userPrompt = userPrompt
+	return f.decision, nil
 }

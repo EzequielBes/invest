@@ -4,10 +4,12 @@ package strategist
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
 	"risk-engine/risk"
+	riskstorage "risk-engine/storage"
 
 	"strategist/internal/llm"
 	"strategist/internal/storage"
@@ -93,6 +95,29 @@ func TestDecide_MissingAnalysisDataReturnsErrorBeforeCallingLLM(t *testing.T) {
 
 	if _, err := Decide(context.Background(), nil, client, "BTC", incomplete, storage.AgentResult{}, riskPortfolioState(), 10000, 100); err == nil {
 		t.Fatal("expected an error for incomplete analysis data, got nil")
+	}
+}
+
+func TestDecide_RiskEvaluationFailureIsReportedInOutcome(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not set, skipping integration test")
+	}
+	riskStore, err := riskstorage.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("riskstorage.New: %v", err)
+	}
+	// Closing the concrete store is the controlled failure path available to
+	// this package: risk.Evaluate accepts *storage.Store, not an interface.
+	riskStore.Close()
+
+	client := &fakeLLMClient{decision: llm.Decision{Side: "buy", SizingPct: 0.1, Rationale: "persist despite risk failure"}}
+	outcome, err := Decide(context.Background(), riskStore, client, "TESTASSETRISKOUTCOME", validPerAsset(), storage.AgentResult{}, riskPortfolioState(), 10000, 100)
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if outcome.Risk != nil || outcome.RiskErr == nil {
+		t.Fatalf("outcome = %+v, want Risk=nil and RiskErr set", outcome)
 	}
 }
 
