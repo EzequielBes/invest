@@ -137,7 +137,7 @@ func save(ctx context.Context, store *storage.Store, runID, asset string, outcom
 
 func report(asset string, outcome strategist.Outcome) {
 	if outcome.Decision.Side == "hold" {
-		fmt.Printf("%s: hold — %s\n", asset, outcome.Decision.Rationale)
+		fmt.Fprintf(os.Stderr, "%s: hold — %s\n", asset, outcome.Decision.Rationale)
 		return
 	}
 	status := "risk-engine unavailable"
@@ -148,7 +148,7 @@ func report(asset string, outcome strategist.Outcome) {
 			status = fmt.Sprintf("rejected (%s)", strings.Join(outcome.Risk.Reasons, "; "))
 		}
 	}
-	fmt.Printf("%s: %s %.6f (%s) — %s\n", asset, outcome.Decision.Side, outcome.Quantity, status, outcome.Decision.Rationale)
+	fmt.Fprintf(os.Stderr, "%s: %s %.6f (%s) — %s\n", asset, outcome.Decision.Side, outcome.Quantity, status, outcome.Decision.Rationale)
 }
 
 // RunWithDSN connects its own storage using dsn, calls Run, then reads
@@ -168,8 +168,19 @@ func RunWithDSN(ctx context.Context, dsn string, riskStore *riskstorage.Store, a
 		return nil, fmt.Errorf("connect strategist storage: %w", err)
 	}
 	defer store.Close()
+	startedAt := time.Now().UTC()
 	if err := Run(ctx, store, riskStore, llm.NewAnthropicClient(), analysisRunID, assets, timeframe, cash, positions, dailyLoss, weeklyLoss, drawdown, consecutiveLosses); err != nil {
 		return nil, err
 	}
-	return store.DecisionsForRun(ctx, analysisRunID)
+	decisions, err := store.DecisionsForRun(ctx, analysisRunID)
+	if err != nil {
+		return nil, err
+	}
+	fresh := make([]storage.Decision, 0, len(decisions))
+	for _, d := range decisions {
+		if !d.CreatedAt.Before(startedAt) {
+			fresh = append(fresh, d)
+		}
+	}
+	return fresh, nil
 }
