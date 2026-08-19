@@ -7,10 +7,11 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strconv"
 	"strings"
 
 	riskstorage "risk-engine/storage"
+
+	"execution/executor"
 
 	"strategist/internal/llm"
 	"strategist/internal/storage"
@@ -20,31 +21,24 @@ import (
 func main() {
 	runID := flag.String("run-id", "", "analysis_run_id to decide from (required)")
 	assetsStr := flag.String("assets", "", "comma-separated asset symbols to decide on (required)")
-	timeframe := flag.String("timeframe", "1h", "timeframe used to look up the current price")
-	cash := flag.Float64("cash", 0, "cash available, in USD (required)")
-	positionsStr := flag.String("positions", "", "comma-separated SYMBOL:quantity current positions")
 	dailyLoss := flag.Float64("daily-loss", 0, "portfolio daily loss so far, as a fraction (e.g. 0.02 = 2%)")
 	weeklyLoss := flag.Float64("weekly-loss", 0, "portfolio weekly loss so far, as a fraction")
 	drawdown := flag.Float64("drawdown", 0, "portfolio drawdown from peak, as a fraction")
 	consecutiveLosses := flag.Int("consecutive-losses", 0, "number of consecutive losing trades")
 	flag.Parse()
 
-	if err := run(context.Background(), *runID, *assetsStr, *timeframe, *cash, *positionsStr, *dailyLoss, *weeklyLoss, *drawdown, *consecutiveLosses); err != nil {
+	if err := run(context.Background(), *runID, *assetsStr, *dailyLoss, *weeklyLoss, *drawdown, *consecutiveLosses); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(ctx context.Context, runID, assetsStr, timeframe string, cash float64, positionsStr string, dailyLoss, weeklyLoss, drawdown float64, consecutiveLosses int) error {
+func run(ctx context.Context, runID, assetsStr string, dailyLoss, weeklyLoss, drawdown float64, consecutiveLosses int) error {
 	if runID == "" {
 		return fmt.Errorf("-run-id is required")
 	}
 	assets := splitNonEmpty(assetsStr)
 	if len(assets) == 0 {
 		return fmt.Errorf("-assets is required")
-	}
-	positions, err := parsePositions(positionsStr)
-	if err != nil {
-		return err
 	}
 
 	dsn := os.Getenv("DATABASE_URL")
@@ -66,7 +60,13 @@ func run(ctx context.Context, runID, assetsStr, timeframe string, cash float64, 
 	if err != nil {
 		return err
 	}
-	return runner.Run(ctx, store, riskStore, client, runID, assets, timeframe, cash, positions, dailyLoss, weeklyLoss, drawdown, consecutiveLosses)
+	execClient, err := executor.NewClient(ctx, dsn)
+	if err != nil {
+		return err
+	}
+	defer execClient.Close()
+
+	return runner.Run(ctx, store, riskStore, client, execClient, runID, assets, dailyLoss, weeklyLoss, drawdown, consecutiveLosses)
 }
 
 func splitNonEmpty(value string) []string {
@@ -81,22 +81,4 @@ func splitNonEmpty(value string) []string {
 		}
 	}
 	return out
-}
-
-func parsePositions(value string) (map[string]float64, error) {
-	positions := make(map[string]float64)
-	for _, entry := range splitNonEmpty(value) {
-		symbol, qtyStr, found := strings.Cut(entry, ":")
-		symbol = strings.TrimSpace(symbol)
-		qtyStr = strings.TrimSpace(qtyStr)
-		if !found || symbol == "" || qtyStr == "" {
-			return nil, fmt.Errorf("invalid -positions entry %q (want SYMBOL:quantity)", entry)
-		}
-		qty, err := strconv.ParseFloat(qtyStr, 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid -positions entry %q: %w", entry, err)
-		}
-		positions[symbol] = qty
-	}
-	return positions, nil
 }

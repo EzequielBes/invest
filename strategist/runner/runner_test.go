@@ -11,7 +11,10 @@ import (
 
 	"github.com/google/uuid"
 
+	"risk-engine/risk"
 	riskstorage "risk-engine/storage"
+
+	"execution/executor"
 
 	"strategist/internal/llm"
 	"strategist/internal/storage"
@@ -23,6 +26,23 @@ type fakeLLMClient struct {
 
 func (f *fakeLLMClient) Decide(context.Context, string, string) (llm.Decision, error) {
 	return f.decision, nil
+}
+
+// fakeExecClient is a minimal executor.Client fake — same shape as
+// strategist/internal/strategist's fakeExecClient — so these
+// integration tests can supply a portfolio and let real executions
+// (buy/sell on approved decisions) succeed without a real exchange.
+type fakeExecClient struct {
+	cash      float64
+	positions map[string]float64
+}
+
+func (f *fakeExecClient) FetchPortfolio(context.Context) (float64, map[string]float64, error) {
+	return f.cash, f.positions, nil
+}
+
+func (f *fakeExecClient) Execute(_ context.Context, _ string, _ risk.Side, quantity, price float64, _ string) (executor.Outcome, error) {
+	return executor.Outcome{OrderID: "test-order", Status: "filled", FilledQuantity: quantity, FilledPrice: price}, nil
 }
 
 func testStores(t *testing.T) (*storage.Store, *riskstorage.Store) {
@@ -85,7 +105,7 @@ func seedCandle(t *testing.T, store *storage.Store, symbol string, price float64
 	t.Helper()
 	execSQL(t, store, `
 		INSERT INTO candles (exchange, symbol, timeframe, ts, open, high, low, close, volume)
-		VALUES ('binance', $1, '1h', now(), $2, $2, $2, $2, 100)
+		VALUES ('binance', $1, '1m', now(), $2, $2, $2, $2, 100)
 		ON CONFLICT (exchange, symbol, timeframe, ts) DO NOTHING
 	`, symbol, price)
 	t.Cleanup(func() {
@@ -157,7 +177,7 @@ func TestRun_BuyDecisionIsValidatedAndPersisted(t *testing.T) {
 	})
 
 	client := &fakeLLMClient{decision: llm.Decision{Side: "buy", Confidence: 0.8, SizingPct: 0.1, Rationale: "uptrend"}}
-	if err := Run(ctx, store, riskStore, client, runID, []string{testAssetBuy}, "1h", 10000, nil, 0, 0, 0, 0); err != nil {
+	if err := Run(ctx, store, riskStore, client, &fakeExecClient{cash: 10000}, runID, []string{testAssetBuy}, 0, 0, 0, 0); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -192,7 +212,7 @@ func TestRun_HoldSkipsRiskEvaluateButIsPersisted(t *testing.T) {
 	})
 
 	client := &fakeLLMClient{decision: llm.Decision{Side: "hold", Rationale: "no clear signal"}}
-	if err := Run(ctx, store, riskStore, client, runID, []string{testAssetHold}, "1h", 10000, nil, 0, 0, 0, 0); err != nil {
+	if err := Run(ctx, store, riskStore, client, &fakeExecClient{cash: 10000}, runID, []string{testAssetHold}, 0, 0, 0, 0); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -219,7 +239,7 @@ func TestRun_IncompleteAnalysisSkipsAssetWithoutPersisting(t *testing.T) {
 	})
 
 	client := &fakeLLMClient{decision: llm.Decision{Side: "hold"}}
-	if err := Run(ctx, store, riskStore, client, runID, []string{testAssetIncomplete}, "1h", 10000, nil, 0, 0, 0, 0); err != nil {
+	if err := Run(ctx, store, riskStore, client, &fakeExecClient{cash: 10000}, runID, []string{testAssetIncomplete}, 0, 0, 0, 0); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -244,7 +264,7 @@ func TestRun_MissingHeldPositionPriceFailsTheWholeRun(t *testing.T) {
 
 	client := &fakeLLMClient{decision: llm.Decision{Side: "hold"}}
 	positions := map[string]float64{"TESTASSETNOPRICE": 1}
-	err := Run(ctx, store, riskStore, client, runID, []string{testAssetBuy}, "1h", 10000, positions, 0, 0, 0, 0)
+	err := Run(ctx, store, riskStore, client, &fakeExecClient{cash: 10000, positions: positions}, runID, []string{testAssetBuy}, 0, 0, 0, 0)
 	if err == nil {
 		t.Fatal("expected an error when a held position has no price data, got nil")
 	}
@@ -261,7 +281,7 @@ func TestRun_ZeroPortfolioValueFailsTheWholeRun(t *testing.T) {
 	})
 
 	client := &fakeLLMClient{decision: llm.Decision{Side: "hold"}}
-	err := Run(ctx, store, riskStore, client, runID, []string{testAssetBuy}, "1h", 0, nil, 0, 0, 0, 0)
+	err := Run(ctx, store, riskStore, client, &fakeExecClient{cash: 0}, runID, []string{testAssetBuy}, 0, 0, 0, 0)
 	if err == nil {
 		t.Fatal("expected an error when cash and positions are both zero/unset, got nil")
 	}
@@ -280,7 +300,7 @@ func TestRun_BuyDecisionCanBeApprovedAndPersisted(t *testing.T) {
 	})
 
 	client := &fakeLLMClient{decision: llm.Decision{Side: "buy", Confidence: 0.8, SizingPct: 0.1, Rationale: "validated setup"}}
-	if err := Run(ctx, store, riskStore, client, runID, []string{testAssetApproved}, "1h", 10000, nil, 0, 0, 0, 0); err != nil {
+	if err := Run(ctx, store, riskStore, client, &fakeExecClient{cash: 10000}, runID, []string{testAssetApproved}, 0, 0, 0, 0); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	decisions, err := store.DecisionsForTest(ctx, runID)
@@ -303,7 +323,7 @@ func TestRun_RiskEvaluationFailureStillPersistsDecision(t *testing.T) {
 	// A closed pool forces risk.Evaluate to fail after the LLM decision is made.
 	riskStore.Close()
 	client := &fakeLLMClient{decision: llm.Decision{Side: "buy", Confidence: 0.8, SizingPct: 0.1, Rationale: "keep the LLM decision"}}
-	if err := Run(ctx, store, riskStore, client, runID, []string{testAssetRiskError}, "1h", 10000, nil, 0, 0, 0, 0); err != nil {
+	if err := Run(ctx, store, riskStore, client, &fakeExecClient{cash: 10000}, runID, []string{testAssetRiskError}, 0, 0, 0, 0); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	decisions, err := store.DecisionsForTest(ctx, runID)
@@ -328,7 +348,7 @@ func TestRun_UsesNewestRiskContext(t *testing.T) {
 	`, uuid.NewString(), runID, jsonObj(t, map[string]any{"risk_status": "paused"}), time.Now().UTC().Add(time.Second))
 
 	client := &capturingLLMClient{decision: llm.Decision{Side: "hold", Rationale: "wait"}}
-	if err := Run(ctx, store, riskStore, client, runID, []string{testAssetHold}, "1h", 10000, nil, 0, 0, 0, 0); err != nil {
+	if err := Run(ctx, store, riskStore, client, &fakeExecClient{cash: 10000}, runID, []string{testAssetHold}, 0, 0, 0, 0); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if client.userPrompt == "" || !strings.Contains(client.userPrompt, "newest risk context") {
