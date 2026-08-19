@@ -93,3 +93,16 @@ func RunBacktest(ctx context.Context, riskStore *riskstorage.Store, simStore *si
 	}
 	return runID, tradeCount, results, nil
 }
+
+// RunWithDSN connects its own storage using dsn and calls RunBacktest —
+// same cross-module-visibility reason as analysis/strategist's
+// RunWithDSN (sub-project 6, Tasks 6-7): callers outside this module
+// can't import simulation/internal/storage directly.
+func RunWithDSN(ctx context.Context, dsn string, riskStore *riskstorage.Store, cfg Config) (runID string, tradeCount int, results metrics.Results, err error) {
+	simStore, err := simstorage.New(ctx, dsn)
+	if err != nil {
+		return "", 0, metrics.Results{}, fmt.Errorf("connect simulation storage: %w", err)
+	}
+	defer simStore.Close()
+	return RunBacktest(ctx, riskStore, simStore, cfg)
+}
