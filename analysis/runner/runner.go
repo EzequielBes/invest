@@ -105,3 +105,21 @@ func abortRun(ctx context.Context, store *storage.Store, runID string, successCo
 	}
 	return runID, successCount, wrappedRunErr
 }
+
+// RunWithDSN connects its own storage using dsn and calls Run — this
+// indirection exists so callers outside this module (e.g. the MCP
+// server) never need to import analysis/internal/storage or
+// analysis/internal/llm directly, which Go's internal-package
+// visibility rule forbids across module boundaries (a `replace`
+// directive only affects version resolution, not import-path
+// visibility). riskStore is still supplied by the caller since
+// risk-engine/storage is a public package, legal to import from
+// anywhere.
+func RunWithDSN(ctx context.Context, dsn string, riskStore *riskstorage.Store, assets []string, assetNames map[string]string, timeframe string, requestedAgents []string) (runID string, successCount int, err error) {
+	store, err := storage.New(ctx, dsn)
+	if err != nil {
+		return "", 0, fmt.Errorf("connect analysis storage: %w", err)
+	}
+	defer store.Close()
+	return Run(ctx, store, riskStore, llm.NewAnthropicClient(), assets, assetNames, timeframe, requestedAgents)
+}
