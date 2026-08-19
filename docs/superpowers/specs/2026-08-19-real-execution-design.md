@@ -58,12 +58,26 @@ Decomposição completa da plataforma (para referência):
   nasce público). O fluxo fica encadeado numa única chamada: `strategist`
   busca o portfolio real, decide, valida com `risk.Evaluate` e, se
   aprovado, executa — sem passo manual intermediário.
-- **Isso muda o comportamento observável do `mcp` sem tocar no código
-  dele**: como `run_strategist` chama `strategist.Run`/`RunWithDSN`, toda
-  chamada futura a essa tool MCP passa a também executar ordens reais na
-  testnet, não só persistir a decisão como hoje. Confirmado como
-  comportamento esperado pelo usuário — ainda é testnet, sem risco de
-  capital.
+- **Isso muda o comportamento observável do `mcp`, e exige uma pequena
+  atualização de compatibilidade no código dele** (correção feita durante
+  o planejamento desta fase — o rascunho original deste spec afirmava
+  "sem tocar no código do mcp", o que está errado: ver a lição equivalente
+  do sub-projeto 7 sobre manifests/imports transitivos, registrada em
+  memória — aqui o problema é a própria assinatura de `RunWithDSN`, não só
+  o `go.mod`). Como `run_strategist` chama `strategist.Run`/`RunWithDSN`,
+  toda chamada futura a essa tool MCP passa a também executar ordens
+  reais na testnet, não só persistir a decisão como hoje — comportamento
+  esperado, confirmado pelo usuário (ainda é testnet, sem risco de
+  capital). Mas como `cash`/`positions`/`timeframe` deixam de fazer
+  sentido como parâmetros de `RunWithDSN` (portfolio real substitui os
+  dois primeiros; preço de sizing passa a ser sempre `1m`), a assinatura
+  de `RunWithDSN` muda, e `mcp/internal/tools/strategist.go` — que chama
+  essa função e expõe esses três campos em `RunStrategistArgs` — precisa
+  ser atualizado para compilar. `mcp/go.mod` também precisa de `go mod
+  tidy` para declarar `execution` como dependência transitiva nova (via
+  `strategist/runner` → `execution/executor`), e `mcp/docker-compose.yml`
+  precisa montar `../execution:/execution` como já faz para os outros
+  módulos irmãos.
 - **Ordens do tipo limit**, no preço de mercado atual (mesmo preço usado
   para o sizing da decisão) — não market order. Acompanhamento por
   polling do status a cada ~2s até um timeout fixo de 30s; se não
@@ -214,4 +228,7 @@ A execução real está pronta quando:
 - Um retry acidental da mesma decisão nunca resulta em ordem duplicada na
   exchange (via `newClientOrderId` determinístico).
 - `run_strategist` via MCP passa a executar ordens reais na testnet como
-  parte do mesmo fluxo, sem exigir nenhuma mudança no código do `mcp`.
+  parte do mesmo fluxo, com `mcp/internal/tools/strategist.go` atualizado
+  para a nova assinatura de `RunWithDSN` (sem `cash`/`positions`/
+  `timeframe`) e `mcp/go.mod`/`docker-compose.yml` atualizados para a
+  nova dependência transitiva em `execution`.
