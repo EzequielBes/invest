@@ -37,6 +37,11 @@ func run(ctx context.Context) error {
 	}
 	defer riskStore.Close()
 
+	server := newServer(store, riskStore, dsn)
+	return server.Run(ctx, &mcp.StdioTransport{})
+}
+
+func newServer(store *storage.Store, riskStore *riskstorage.Store, dsn string) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "investment-platform", Version: "0.1.0"}, nil)
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -87,5 +92,5 @@ func run(ctx context.Context) error {
 		return nil, result, err
 	})
 
-	return server.Run(ctx, &mcp.StdioTransport{})
+	return server
 }
