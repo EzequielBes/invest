@@ -37,6 +37,19 @@ func TestNarrativeFromCompletion_RefusalIsFailure(t *testing.T) {
 	}
 }
 
+func TestNarrativeFromCompletion_LengthIsFailure(t *testing.T) {
+	resp := &openai.ChatCompletion{
+		Choices: []openai.ChatCompletionChoice{
+			{FinishReason: "length", Message: openai.ChatCompletionMessage{Content: ""}},
+		},
+	}
+
+	_, err := narrativeFromCompletion(resp)
+	if err == nil || !strings.Contains(err.Error(), "max_completion_tokens") {
+		t.Fatalf("error = %v, want max_completion_tokens error", err)
+	}
+}
+
 func TestNarrativeFromCompletion_RejectsMissingText(t *testing.T) {
 	cases := map[string]*openai.ChatCompletion{
 		"nil response": nil,

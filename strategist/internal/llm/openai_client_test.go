@@ -34,6 +34,17 @@ func TestDecisionFromCompletion_ParsesToolCall(t *testing.T) {
 	}
 }
 
+func TestDecisionFromCompletion_LengthIsFailure(t *testing.T) {
+	resp := &openai.ChatCompletion{
+		Choices: []openai.ChatCompletionChoice{{FinishReason: "length"}},
+	}
+
+	_, err := decisionFromCompletion(resp)
+	if err == nil || !strings.Contains(err.Error(), "max_completion_tokens") {
+		t.Fatalf("error = %v, want max_completion_tokens error", err)
+	}
+}
+
 func TestDecisionFromCompletion_RefusalIsFailure(t *testing.T) {
 	resp := &openai.ChatCompletion{
 		Choices: []openai.ChatCompletionChoice{{Message: openai.ChatCompletionMessage{Refusal: "can't help with that"}}},

@@ -1,4 +1,3 @@
-// strategist/internal/llm/openai_client.go
 package llm
 
 import (
@@ -9,7 +8,10 @@ import (
 	"github.com/openai/openai-go"
 )
 
-const openAIModel = "gpt-5"
+const (
+	openAIModel               = "gpt-5"
+	openAIMaxCompletionTokens = 4096
+)
 
 // OpenAIClient is the OpenAI-backed implementation of Client — a second
 // provider alongside AnthropicClient, selected by availability (see
@@ -61,7 +63,7 @@ var openAIDecisionTool = openai.ChatCompletionToolParam{
 func (c *OpenAIClient) Decide(ctx context.Context, systemPrompt, userPrompt string) (Decision, error) {
 	resp, err := c.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
 		Model:               openAIModel,
-		MaxCompletionTokens: openai.Int(maxTokens),
+		MaxCompletionTokens: openai.Int(openAIMaxCompletionTokens),
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage(systemPrompt),
 			openai.UserMessage(userPrompt),
@@ -80,6 +82,9 @@ func (c *OpenAIClient) Decide(ctx context.Context, systemPrompt, userPrompt stri
 func decisionFromCompletion(resp *openai.ChatCompletion) (Decision, error) {
 	if resp == nil || len(resp.Choices) == 0 {
 		return Decision{}, fmt.Errorf("llm: openai decide: empty response")
+	}
+	if resp.Choices[0].FinishReason == "length" {
+		return Decision{}, fmt.Errorf("llm: openai decide: hit max_completion_tokens (%d) before producing output", openAIMaxCompletionTokens)
 	}
 	message := resp.Choices[0].Message
 	if message.Refusal != "" {

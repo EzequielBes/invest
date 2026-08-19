@@ -1,4 +1,3 @@
-// analysis/internal/llm/openai_client.go
 package llm
 
 import (
@@ -9,7 +8,10 @@ import (
 	"github.com/openai/openai-go"
 )
 
-const openAIModel = "gpt-5"
+const (
+	openAIModel               = "gpt-5"
+	openAIMaxCompletionTokens = 4096
+)
 
 // OpenAIClient is the OpenAI-backed implementation of Client — a second
 // provider alongside AnthropicClient, selected by availability (see
@@ -27,7 +29,7 @@ func NewOpenAIClient() *OpenAIClient {
 func (c *OpenAIClient) Summarize(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
 	resp, err := c.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
 		Model:               openAIModel,
-		MaxCompletionTokens: openai.Int(maxTokens),
+		MaxCompletionTokens: openai.Int(openAIMaxCompletionTokens),
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage(systemPrompt),
 			openai.UserMessage(userPrompt),
@@ -42,6 +44,9 @@ func (c *OpenAIClient) Summarize(ctx context.Context, systemPrompt, userPrompt s
 func narrativeFromCompletion(resp *openai.ChatCompletion) (string, error) {
 	if resp == nil || len(resp.Choices) == 0 {
 		return "", fmt.Errorf("llm: openai summarize: empty response")
+	}
+	if resp.Choices[0].FinishReason == "length" {
+		return "", fmt.Errorf("llm: openai summarize: hit max_completion_tokens (%d) before producing output", openAIMaxCompletionTokens)
 	}
 	message := resp.Choices[0].Message
 	if message.Refusal != "" {
