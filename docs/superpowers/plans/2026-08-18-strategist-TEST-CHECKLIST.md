@@ -35,7 +35,7 @@ teste do módulo — nem em `decide_test.go` (usa `riskStore=nil`, só cobre
 `hold`/falha de LLM) nem em `main_test.go` (usa um `riskStore` real que
 sempre *responde*, nunca falha).
 
-- [ ] **`risk.Evaluate` retornando erro real.** Precisa de um jeito de
+- [x] **`risk.Evaluate` retornando erro real.** Coberto com um pool fechado:
       forçar isso — mais fácil via `internal/strategist` com um
       `*riskstorage.Store` real mas apontando para um DSN inválido/fechado
       (não dá para mockar, `risk.Evaluate` recebe `*storage.Store`
@@ -58,7 +58,7 @@ verificam que uma decisão *existe* e foi persistida, não qual o veredito),
 mas significa que o branch `if outcome.Risk.Allowed { status = "approved" }`
 em `report()` (`cmd/strategist/main.go`) nunca rodou em teste nenhum.
 
-- [ ] **Cenário de aprovação real.** Seedar candles de `TESTASSET*` também
+- [x] **Cenário de aprovação real.** Coberto com candles de `TESTASSET*` também
       no timeframe `1m` (60+ candles, com volume/preço suficientes para
       passar `checkVolatility`/`checkLiquidity`) além do `1h` já usado para
       o preço, e limites de risco (`risk_limits`, já seedados pela migration
@@ -69,7 +69,7 @@ em `report()` (`cmd/strategist/main.go`) nunca rodou em teste nenhum.
 
 ## `cmd/strategist/flags_test.go` — borda de `-positions`
 
-- [ ] **Entrada só com espaços em branco** (ex. `" : "`). Já tratado
+- [x] **Entrada só com espaços em branco** (ex. `" : "`). Já tratado
       corretamente pelo guard `symbol == "" || qtyStr == ""` em
       `parsePositions` (confirmado na revisão final), só não tem teste
       dedicado. Baixa prioridade — a borda real (`"BTC"` sem `:`) já é
@@ -77,7 +77,7 @@ em `report()` (`cmd/strategist/main.go`) nunca rodou em teste nenhum.
 
 ## `internal/storage/analysisdata.go` — determinismo de `risk_context`
 
-- [ ] **Duas linhas `risk_context` no mesmo run.** `ResultsForRun` não tem
+- [x] **Duas linhas `risk_context` no mesmo run.** `ResultsForRun` agora tem
       `ORDER BY`, e `cmd/strategist/main.go` fica com a última linha
       `risk_context` iterada, não necessariamente a mais recente. Hoje o
       `analysis` só grava uma linha `risk_context` por run, então isso é
