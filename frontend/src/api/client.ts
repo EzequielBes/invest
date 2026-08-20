@@ -116,6 +116,46 @@ export interface BacktestDetail {
   equity_curve: EquityPoint[];
 }
 
+export interface NewsItem {
+  id: number;
+  source: string;
+  published_at: string;
+  title: string;
+  body: string;
+  url: string;
+}
+
+export interface ConfigStatus {
+  binance_configured: boolean;
+  anthropic_configured: boolean;
+  openai_configured: boolean;
+}
+
+export interface TriggerBacktestRequest {
+  period_start: string;
+  period_end: string;
+  timeframes: string[];
+  driving_timeframe: string;
+  assets: string[];
+  initial_cash?: number;
+  fee_pct?: number;
+  ma_short_period?: number;
+  ma_long_period?: number;
+}
+
+export interface TriggerBacktestResponse {
+  backtest_run_id: string;
+  trade_attempts: number;
+  total_return_pct: number;
+  max_drawdown_pct: number;
+  sharpe_ratio: number;
+  sortino_ratio: number;
+  annualized_volatility_pct: number;
+  win_rate_pct: number;
+  total_trades: number;
+  avg_trade_pct: number;
+}
+
 async function getJSON<T>(path: string): Promise<T> {
   const response = await fetch(path);
   if (!response.ok) {
@@ -125,6 +165,19 @@ async function getJSON<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function postJSON<TReq, TRes>(path: string, payload: TReq): Promise<TRes> {
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const body: { error?: string } = await response.json().catch(() => ({}));
+    throw new Error(body.error ?? `request failed: ${response.status}`);
+  }
+  return response.json() as Promise<TRes>;
+}
+
 export const api = {
   decisions: () => getJSON<Decision[]>('/api/decisions'),
   riskState: () => getJSON<RiskStateResponse>('/api/risk-state'),
@@ -132,5 +185,8 @@ export const api = {
   analysisRunDetail: (id: string) => getJSON<AnalysisRunDetail>(`/api/analysis-runs/${id}`),
   backtests: () => getJSON<BacktestRun[]>('/api/backtests'),
   backtestDetail: (id: string) => getJSON<BacktestDetail>(`/api/backtests/${id}`),
+  triggerBacktest: (req: TriggerBacktestRequest) => postJSON<TriggerBacktestRequest, TriggerBacktestResponse>('/api/backtests', req),
   equitySnapshots: () => getJSON<EquityPoint[]>('/api/equity-snapshots'),
+  news: () => getJSON<NewsItem[]>('/api/news'),
+  configStatus: () => getJSON<ConfigStatus>('/api/config-status'),
 };

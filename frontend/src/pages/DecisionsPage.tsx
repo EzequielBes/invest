@@ -1,5 +1,19 @@
 import { api, type Decision } from '../api/client';
+import StampBadge from '../components/StampBadge';
 import { usePolling } from '../hooks/usePolling';
+
+function riskStamp(decision: Decision) {
+  if (decision.risk_allowed === undefined) return <StampBadge tone="dim">sem avaliacao</StampBadge>;
+  return decision.risk_allowed
+    ? <StampBadge tone="sage">aprovado</StampBadge>
+    : <StampBadge tone="rust">rejeitado</StampBadge>;
+}
+
+function executionStamp(decision: Decision) {
+  if (!decision.execution_status) return null;
+  const tone = decision.execution_status === 'filled' ? 'sage' : decision.execution_status === 'cancelled' ? 'dim' : 'brass';
+  return <StampBadge tone={tone}>{decision.execution_status}</StampBadge>;
+}
 
 export default function DecisionsPage() {
   const { data, error } = usePolling<Decision[]>(api.decisions);
@@ -9,18 +23,29 @@ export default function DecisionsPage() {
   if (data.length === 0) return <p>Nenhuma decisao encontrada.</p>;
 
   return (
-    <table className="data-table">
-      <thead><tr><th>Ativo</th><th>Lado</th><th>Confianca</th><th>Risco</th><th>Execucao</th><th>Criado em</th></tr></thead>
-      <tbody>
-        {data.map((decision) => (
-          <tr key={decision.id}>
-            <td>{decision.asset}</td><td>{decision.side}</td><td>{(decision.confidence * 100).toFixed(0)}%</td>
-            <td>{decision.risk_allowed === undefined ? '-' : decision.risk_allowed ? 'aprovado' : `rejeitado: ${decision.risk_reasons?.join('; ') ?? ''}`}</td>
-            <td>{decision.execution_status ? `${decision.execution_status} (${decision.execution_filled_quantity ?? 0} @ ${decision.execution_filled_price ?? 0})` : '-'}</td>
-            <td>{new Date(decision.created_at).toLocaleString()}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <div className="ledger">
+      {data.map((decision) => (
+        <article className={`ledger-entry side-${decision.side}`} key={decision.id}>
+          <div className="ledger-head">
+            <span className="ledger-asset">{decision.asset} &middot; {decision.side.toUpperCase()}</span>
+            <span className="ledger-meta">
+              <span>confianca {(decision.confidence * 100).toFixed(0)}%</span>
+              <span>{new Date(decision.created_at).toLocaleString('pt-BR')}</span>
+            </span>
+          </div>
+          {decision.rationale && <p className="ledger-rationale">&ldquo;{decision.rationale}&rdquo;</p>}
+          <div className="ledger-foot">
+            {riskStamp(decision)}
+            {executionStamp(decision)}
+            {decision.execution_filled_quantity !== undefined && decision.execution_filled_price !== undefined && (
+              <span className="ledger-meta">executado {decision.execution_filled_quantity} @ {decision.execution_filled_price}</span>
+            )}
+            {decision.risk_allowed === false && decision.risk_reasons && decision.risk_reasons.length > 0 && (
+              <span className="ledger-meta">{decision.risk_reasons.join('; ')}</span>
+            )}
+          </div>
+        </article>
+      ))}
+    </div>
   );
 }

@@ -19,20 +19,59 @@ export default function BacktestsPage() {
   if (!data) return <p aria-live="polite">Carregando...</p>;
   if (data.length === 0) return <p>Nenhum backtest encontrado.</p>;
 
-  return <div className="split-view">
-    <table className="data-table"><thead><tr><th>Estrategia</th><th>Status</th><th>Retorno</th><th>Sharpe</th><th>Inicio</th></tr></thead>
-      <tbody>{data.map((run) => <tr className={run.id === selectedID ? 'selected' : ''} key={run.id}>
-        <td><button aria-pressed={run.id === selectedID} className="row-select" onClick={() => void selectRun(run.id)} type="button">{run.strategy_name}</button></td>
-        <td>{run.status}</td><td>{run.results ? `${run.results.total_return_pct.toFixed(2)}%` : '-'}</td><td>{run.results ? run.results.sharpe_ratio.toFixed(2) : '-'}</td><td>{new Date(run.started_at).toLocaleString()}</td>
-      </tr>)}</tbody>
-    </table>
-    <section aria-live="polite" className="detail-panel" aria-label="Detalhes do backtest">
-      {detailError && <p className="error" role="alert">{detailError}</p>}
-      {detail && <><h3>{detail.run.strategy_name} - {detail.run.id}</h3><EquityCurveChart points={detail.equity_curve} />
-        <table className="data-table"><thead><tr><th>Data</th><th>Ativo</th><th>Lado</th><th>Qtd</th><th>Preco</th><th>Permitido</th></tr></thead>
-          <tbody>{detail.trades.map((trade) => <tr key={`${trade.ts}-${trade.asset}-${trade.side}`}><td>{new Date(trade.ts).toLocaleString()}</td><td>{trade.asset}</td><td>{trade.side}</td><td>{trade.quantity}</td><td>{trade.price}</td><td>{trade.allowed ? 'sim' : `nao: ${trade.reject_reason ?? ''}`}</td></tr>)}</tbody>
-        </table>
-      </>}
-    </section>
-  </div>;
+  return (
+    <div className="split-view">
+      <table className="data-table">
+        <thead><tr><th>Estrategia</th><th>Status</th><th>Retorno</th><th>Sharpe</th><th>Inicio</th></tr></thead>
+        <tbody>{data.map((run) => (
+          <tr className={run.id === selectedID ? 'selected' : ''} key={run.id}>
+            <td><button aria-pressed={run.id === selectedID} className="row-select" onClick={() => void selectRun(run.id)} type="button">{run.strategy_name}</button></td>
+            <td>{run.status}</td>
+            <td>{run.results ? `${run.results.total_return_pct.toFixed(2)}%` : '-'}</td>
+            <td>{run.results ? run.results.sharpe_ratio.toFixed(2) : '-'}</td>
+            <td>{new Date(run.started_at).toLocaleString('pt-BR')}</td>
+          </tr>
+        ))}</tbody>
+      </table>
+      <section aria-live="polite" aria-label="Detalhes do backtest" className="detail-panel">
+        {detailError && <p className="error" role="alert">{detailError}</p>}
+        {detail && (
+          <>
+            <h3>{detail.run.strategy_name} &middot; {detail.run.id}</h3>
+            {detail.run.results && (
+              <div className="stat-row">
+                <div className="stat">
+                  <div className={`stat-value${detail.run.results.total_return_pct < 0 ? ' negative' : ''}`}>{detail.run.results.total_return_pct.toFixed(2)}%</div>
+                  <div className="stat-label">retorno total</div>
+                </div>
+                <div className="stat">
+                  <div className="stat-value">{detail.run.results.sharpe_ratio.toFixed(2)}</div>
+                  <div className="stat-label">sharpe</div>
+                </div>
+                <div className="stat">
+                  <div className={`stat-value${detail.run.results.max_drawdown_pct < 0 ? ' negative' : ''}`}>{detail.run.results.max_drawdown_pct.toFixed(2)}%</div>
+                  <div className="stat-label">drawdown max</div>
+                </div>
+                <div className="stat">
+                  <div className="stat-value">{detail.run.results.win_rate_pct.toFixed(0)}%</div>
+                  <div className="stat-label">win rate</div>
+                </div>
+              </div>
+            )}
+            <EquityCurveChart points={detail.equity_curve} />
+            <table className="data-table">
+              <thead><tr><th>Data</th><th>Ativo</th><th>Lado</th><th>Qtd</th><th>Preco</th><th>Permitido</th></tr></thead>
+              <tbody>{detail.trades.map((trade) => (
+                <tr key={`${trade.ts}-${trade.asset}-${trade.side}`}>
+                  <td>{new Date(trade.ts).toLocaleString('pt-BR')}</td>
+                  <td>{trade.asset}</td><td>{trade.side}</td><td>{trade.quantity}</td><td>{trade.price}</td>
+                  <td>{trade.allowed ? 'sim' : `nao: ${trade.reject_reason ?? ''}`}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </>
+        )}
+      </section>
+    </div>
+  );
 }

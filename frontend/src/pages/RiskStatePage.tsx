@@ -14,19 +14,31 @@ const LIMITS: { key: keyof RiskStateResponse['limits']; label: string }[] = [
   { key: 'max_data_age_minutes', label: 'Idade max do dado (min)' },
 ];
 
+function statusTone(status: string): 'sage' | 'rust' | 'brass' {
+  if (status === 'normal') return 'sage';
+  if (status === 'kill_switch') return 'rust';
+  return 'brass';
+}
+
 export default function RiskStatePage() {
   const { data, error } = usePolling<RiskStateResponse>(api.riskState);
 
   if (error) return <p className="error" role="alert">Erro ao carregar estado de risco: {error}</p>;
   if (!data) return <p aria-live="polite">Carregando...</p>;
 
-  return <div className="risk-state">
-    <h2>Status: {data.state.status}</h2>
-    <p>{data.state.reason}</p>
-    <p>Atualizado em: {new Date(data.state.changed_at).toLocaleString()}</p>
-    <table className="data-table">
-      <thead><tr><th>Limite</th><th>Valor configurado</th></tr></thead>
-      <tbody>{LIMITS.map(({ key, label }) => <tr key={key}><td>{label}</td><td>{data.limits[key]}</td></tr>)}</tbody>
-    </table>
-  </div>;
+  const tone = statusTone(data.state.status);
+
+  return (
+    <div>
+      <div className="plaque">
+        <div className={`plaque-status tone-${tone}`}>{data.state.status}</div>
+        <p className="plaque-reason">&ldquo;{data.state.reason}&rdquo;</p>
+        <p className="plaque-time">atualizado em {new Date(data.state.changed_at).toLocaleString('pt-BR')}</p>
+      </div>
+      <table className="data-table">
+        <thead><tr><th>Limite</th><th>Valor configurado</th></tr></thead>
+        <tbody>{LIMITS.map(({ key, label }) => <tr key={key}><td>{label}</td><td>{data.limits[key]}</td></tr>)}</tbody>
+      </table>
+    </div>
+  );
 }

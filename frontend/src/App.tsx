@@ -1,25 +1,52 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import AnalysisRunsPage from './pages/AnalysisRunsPage';
 import BacktestsPage from './pages/BacktestsPage';
 import DecisionsPage from './pages/DecisionsPage';
 import EquityPage from './pages/EquityPage';
+import NewsPage from './pages/NewsPage';
+import OverviewPage from './pages/OverviewPage';
 import RiskStatePage from './pages/RiskStatePage';
+import SimulatePage from './pages/SimulatePage';
 
-type Tab = 'decisions' | 'risk' | 'analysis' | 'backtests' | 'equity';
+type Tab = 'overview' | 'decisions' | 'risk' | 'analysis' | 'backtests' | 'simulate' | 'equity' | 'news';
 
 const TABS: { id: Tab; label: string }[] = [
+  { id: 'overview', label: 'Visao Geral' },
   { id: 'decisions', label: 'Decisoes' },
   { id: 'risk', label: 'Risco' },
   { id: 'analysis', label: 'Analises' },
   { id: 'backtests', label: 'Backtests' },
+  { id: 'simulate', label: 'Simular' },
   { id: 'equity', label: 'Patrimonio' },
+  { id: 'news', label: 'Noticias' },
 ];
 
+function useClock() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return now;
+}
+
 export default function App() {
-  const [tab, setTab] = useState<Tab>('decisions');
+  const [tab, setTab] = useState<Tab>('overview');
+  const now = useClock();
 
   return (
     <div className="app">
+      <header className="desk-header">
+        <div className="desk-title">
+          <span aria-hidden="true" className="live-dot" />
+          <strong>Mesa de Operacoes</strong>
+          <span className="divider">&middot;</span>
+          <span>investment-platform</span>
+        </div>
+        <time className="desk-clock" dateTime={now.toISOString()}>
+          {now.toLocaleTimeString('pt-BR')}
+        </time>
+      </header>
       <nav aria-label="Dashboard" className="tabs" role="tablist">
         {TABS.map((item) => {
           const selected = item.id === tab;
@@ -45,11 +72,14 @@ export default function App() {
         id={`${tab}-panel`}
         role="tabpanel"
       >
+        {tab === 'overview' && <OverviewPage />}
         {tab === 'decisions' && <DecisionsPage />}
         {tab === 'risk' && <RiskStatePage />}
         {tab === 'analysis' && <AnalysisRunsPage />}
         {tab === 'backtests' && <BacktestsPage />}
+        {tab === 'simulate' && <SimulatePage />}
         {tab === 'equity' && <EquityPage />}
+        {tab === 'news' && <NewsPage />}
       </main>
     </div>
   );
