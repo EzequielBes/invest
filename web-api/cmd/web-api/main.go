@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 
+	riskstorage "risk-engine/storage"
+
 	"web-api/internal/api"
 	"web-api/internal/storage"
 )
@@ -28,8 +30,14 @@ func run() error {
 	}
 	defer store.Close()
 
+	riskStore, err := riskstorage.New(context.Background(), dsn)
+	if err != nil {
+		return fmt.Errorf("connect risk-engine storage: %w", err)
+	}
+	defer riskStore.Close()
+
 	frontendDir := os.Getenv("FRONTEND_DIST_DIR")
-	handler := api.NewServer(store, frontendDir)
+	handler := api.NewServer(store, dsn, riskStore, frontendDir)
 	addr := os.Getenv("WEB_API_ADDR")
 	if addr == "" {
 		addr = ":8080"

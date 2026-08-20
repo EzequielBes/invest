@@ -25,6 +25,8 @@ type fakeStore struct {
 	backtestErr     error
 	equitySnapshots []storage.EquityPoint
 	equityErr       error
+	news            []storage.NewsItem
+	newsErr         error
 	lastLimit       int
 }
 
@@ -53,9 +55,22 @@ func (f *fakeStore) RecentEquitySnapshots(_ context.Context, limit int) ([]stora
 	f.lastLimit = limit
 	return f.equitySnapshots, f.equityErr
 }
+func (f *fakeStore) RecentNews(_ context.Context, limit int) ([]storage.NewsItem, error) {
+	f.lastLimit = limit
+	return f.news, f.newsErr
+}
+
+// newTestServer builds a server for tests that never hit POST
+// /api/backtests (the only handler that uses dsn/riskStore) — a nil
+// riskStore there would panic, which is exactly the assertion we want
+// if a test ever accidentally exercises that route without setting one
+// up for real.
+func newTestServer(store dataStore) http.Handler {
+	return NewServer(store, "", nil, "")
+}
 
 func TestHandleDecisionsReturnsJSONList(t *testing.T) {
-	server := NewServer(&fakeStore{decisions: []storage.Decision{{ID: "d1", Asset: "BTC"}}}, "")
+	server := newTestServer(&fakeStore{decisions: []storage.Decision{{ID: "d1", Asset: "BTC"}}})
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/decisions", nil))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"BTC"`) {
@@ -78,7 +93,7 @@ func TestParseLimitDefaultInvalidAndClamped(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			store := &fakeStore{}
-			NewServer(store, "").ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, test.path, nil))
+			newTestServer(store).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, test.path, nil))
 			if store.lastLimit != test.want {
 				t.Errorf("limit = %d, want %d", store.lastLimit, test.want)
 			}
@@ -91,7 +106,7 @@ func TestDetailEndpointsReturnNotFound(t *testing.T) {
 		t.Run(path, func(t *testing.T) {
 			store := &fakeStore{analysisErr: storage.ErrNotFound, backtestErr: storage.ErrNotFound}
 			recorder := httptest.NewRecorder()
-			NewServer(store, "").ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+			newTestServer(store).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
 			if recorder.Code != http.StatusNotFound {
 				t.Errorf("status = %d, want 404", recorder.Code)
 			}
@@ -100,7 +115,7 @@ func TestDetailEndpointsReturnNotFound(t *testing.T) {
 }
 
 func TestHandlerErrorsAreGeneric(t *testing.T) {
-	server := NewServer(&fakeStore{decisionsErr: errors.New("database password leaked")}, "")
+	server := newTestServer(&fakeStore{decisionsErr: errors.New("database password leaked")})
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/decisions", nil))
 	if recorder.Code != http.StatusInternalServerError {
@@ -112,7 +127,7 @@ func TestHandlerErrorsAreGeneric(t *testing.T) {
 }
 
 func TestRiskStateEndpointReturnsJSON(t *testing.T) {
-	server := NewServer(&fakeStore{riskState: storage.RiskStateResponse{State: storage.RiskState{Status: "normal"}}}, "")
+	server := newTestServer(&fakeStore{riskState: storage.RiskStateResponse{State: storage.RiskState{Status: "normal"}}})
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/risk-state", nil))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"normal"`) {
@@ -121,10 +136,28 @@ func TestRiskStateEndpointReturnsJSON(t *testing.T) {
 }
 
 func TestEquitySnapshotsEndpointReturnsJSON(t *testing.T) {
-	server := NewServer(&fakeStore{equitySnapshots: []storage.EquityPoint{{TotalEquity: 1234.5}}}, "")
+	server := newTestServer(&fakeStore{equitySnapshots: []storage.EquityPoint{{TotalEquity: 1234.5}}})
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/equity-snapshots", nil))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "1234.5") {
 		t.Fatalf("status/body = %d/%s, want 200 with the snapshot", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestNewsEndpointReturnsJSON(t *testing.T) {
+	server := newTestServer(&fakeStore{news: []storage.NewsItem{{Title: "Bitcoin hits new high"}}})
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/news", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "Bitcoin hits new high") {
+		t.Fatalf("status/body = %d/%s, want 200 with the news item", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestConfigStatusEndpointReturnsJSON(t *testing.T) {
+	server := newTestServer(&fakeStore{})
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/config-status", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
 	}
 }

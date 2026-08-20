@@ -5,12 +5,18 @@ services:
     volumes:
       - .:/app
       - ../frontend/dist:/frontend-dist
+      - ../risk-engine:/risk-engine
+      - ../simulation:/simulation
       - go-mod-cache:/go/pkg/mod
     environment:
       DATABASE_URL: postgres://marketdata:marketdata@timescaledb:5432/marketdata?sslmode=disable
       TEST_DATABASE_URL: postgres://marketdata:marketdata@timescaledb:5432/marketdata?sslmode=disable
       FRONTEND_DIST_DIR: /frontend-dist
       WEB_API_ADDR: ":8080"
+      BINANCE_API_KEY: ${BINANCE_API_KEY:-}
+      BINANCE_API_SECRET: ${BINANCE_API_SECRET:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     ports:
       - "8080:8080"
     networks:

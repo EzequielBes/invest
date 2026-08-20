@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strconv"
 
+	riskstorage "risk-engine/storage"
+
 	"web-api/internal/storage"
 )
 
@@ -23,10 +25,14 @@ type dataStore interface {
 	RecentBacktests(context.Context, int) ([]storage.BacktestRun, error)
 	BacktestDetail(context.Context, string) (storage.BacktestDetail, error)
 	RecentEquitySnapshots(context.Context, int) ([]storage.EquityPoint, error)
+	RecentNews(context.Context, int) ([]storage.NewsItem, error)
 }
 
-// NewServer serves the read-only API and, when configured, built frontend files.
-func NewServer(store dataStore, frontendDir string) http.Handler {
+// NewServer serves the API — read-only except for POST /api/backtests,
+// which triggers a real backtest run — and, when configured, the built
+// frontend files. dsn/riskStore back the one write endpoint (see
+// simulate.go); every other handler only ever touches store.
+func NewServer(store dataStore, dsn string, riskStore *riskstorage.Store, frontendDir string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/decisions", handleDecisions(store))
 	mux.HandleFunc("GET /api/risk-state", handleRiskState(store))
@@ -34,7 +40,10 @@ func NewServer(store dataStore, frontendDir string) http.Handler {
 	mux.HandleFunc("GET /api/analysis-runs/{id}", handleAnalysisRunDetail(store))
 	mux.HandleFunc("GET /api/backtests", handleBacktests(store))
 	mux.HandleFunc("GET /api/backtests/{id}", handleBacktestDetail(store))
+	mux.HandleFunc("POST /api/backtests", handleTriggerBacktest(dsn, riskStore))
 	mux.HandleFunc("GET /api/equity-snapshots", handleEquitySnapshots(store))
+	mux.HandleFunc("GET /api/news", handleNews(store))
+	mux.HandleFunc("GET /api/config-status", handleConfigStatus())
 	if frontendDir != "" {
 		mux.Handle("/", http.FileServer(http.Dir(frontendDir)))
 	}
