@@ -12,18 +12,20 @@ import (
 )
 
 type fakeStore struct {
-	decisions      []storage.Decision
-	decisionsErr   error
-	riskState      storage.RiskStateResponse
-	riskStateErr   error
-	analysisRuns   []storage.AnalysisRun
-	analysisErr    error
-	analysisDetail storage.AnalysisRunDetail
-	backtests      []storage.BacktestRun
-	backtestsErr   error
-	backtestDetail storage.BacktestDetail
-	backtestErr    error
-	lastLimit      int
+	decisions       []storage.Decision
+	decisionsErr    error
+	riskState       storage.RiskStateResponse
+	riskStateErr    error
+	analysisRuns    []storage.AnalysisRun
+	analysisErr     error
+	analysisDetail  storage.AnalysisRunDetail
+	backtests       []storage.BacktestRun
+	backtestsErr    error
+	backtestDetail  storage.BacktestDetail
+	backtestErr     error
+	equitySnapshots []storage.EquityPoint
+	equityErr       error
+	lastLimit       int
 }
 
 func (f *fakeStore) RecentDecisions(_ context.Context, limit int) ([]storage.Decision, error) {
@@ -46,6 +48,10 @@ func (f *fakeStore) RecentBacktests(_ context.Context, limit int) ([]storage.Bac
 }
 func (f *fakeStore) BacktestDetail(context.Context, string) (storage.BacktestDetail, error) {
 	return f.backtestDetail, f.backtestErr
+}
+func (f *fakeStore) RecentEquitySnapshots(_ context.Context, limit int) ([]storage.EquityPoint, error) {
+	f.lastLimit = limit
+	return f.equitySnapshots, f.equityErr
 }
 
 func TestHandleDecisionsReturnsJSONList(t *testing.T) {
@@ -111,5 +117,14 @@ func TestRiskStateEndpointReturnsJSON(t *testing.T) {
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/risk-state", nil))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"normal"`) {
 		t.Fatalf("status/body = %d/%s, want risk state", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestEquitySnapshotsEndpointReturnsJSON(t *testing.T) {
+	server := NewServer(&fakeStore{equitySnapshots: []storage.EquityPoint{{TotalEquity: 1234.5}}}, "")
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/equity-snapshots", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "1234.5") {
+		t.Fatalf("status/body = %d/%s, want 200 with the snapshot", recorder.Code, recorder.Body.String())
 	}
 }

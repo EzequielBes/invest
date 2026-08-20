@@ -22,6 +22,7 @@ type dataStore interface {
 	AnalysisRunDetail(context.Context, string) (storage.AnalysisRunDetail, error)
 	RecentBacktests(context.Context, int) ([]storage.BacktestRun, error)
 	BacktestDetail(context.Context, string) (storage.BacktestDetail, error)
+	RecentEquitySnapshots(context.Context, int) ([]storage.EquityPoint, error)
 }
 
 // NewServer serves the read-only API and, when configured, built frontend files.
@@ -33,6 +34,7 @@ func NewServer(store dataStore, frontendDir string) http.Handler {
 	mux.HandleFunc("GET /api/analysis-runs/{id}", handleAnalysisRunDetail(store))
 	mux.HandleFunc("GET /api/backtests", handleBacktests(store))
 	mux.HandleFunc("GET /api/backtests/{id}", handleBacktestDetail(store))
+	mux.HandleFunc("GET /api/equity-snapshots", handleEquitySnapshots(store))
 	if frontendDir != "" {
 		mux.Handle("/", http.FileServer(http.Dir(frontendDir)))
 	}
