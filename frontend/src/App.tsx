@@ -5,10 +5,11 @@ import DecisionsPage from './pages/DecisionsPage';
 import EquityPage from './pages/EquityPage';
 import NewsPage from './pages/NewsPage';
 import OverviewPage from './pages/OverviewPage';
+import PaperTradingPage from './pages/PaperTradingPage';
 import RiskStatePage from './pages/RiskStatePage';
 import SimulatePage from './pages/SimulatePage';
 
-type Tab = 'overview' | 'decisions' | 'risk' | 'analysis' | 'backtests' | 'simulate' | 'equity' | 'news';
+type Tab = 'overview' | 'decisions' | 'risk' | 'analysis' | 'backtests' | 'simulate' | 'paper' | 'equity' | 'news';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'overview', label: 'Visao Geral' },
@@ -17,6 +18,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'analysis', label: 'Analises' },
   { id: 'backtests', label: 'Backtests' },
   { id: 'simulate', label: 'Simular' },
+  { id: 'paper', label: 'Ao Vivo' },
   { id: 'equity', label: 'Patrimonio' },
   { id: 'news', label: 'Noticias' },
 ];
@@ -78,6 +80,7 @@ export default function App() {
         {tab === 'analysis' && <AnalysisRunsPage />}
         {tab === 'backtests' && <BacktestsPage />}
         {tab === 'simulate' && <SimulatePage />}
+        {tab === 'paper' && <PaperTradingPage />}
         {tab === 'equity' && <EquityPage />}
         {tab === 'news' && <NewsPage />}
       </main>

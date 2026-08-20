@@ -6,6 +6,7 @@ toolchain go1.23.12
 
 require (
 	analysis v0.0.0-00010101000000-000000000000
+	execution v0.0.0-00010101000000-000000000000
 	github.com/jackc/pgx/v5 v5.6.0
 	github.com/modelcontextprotocol/go-sdk v1.0.0
 	risk-engine v0.0.0
@@ -14,7 +15,6 @@ require (
 )
 
 require (
-	execution v0.0.0-00010101000000-000000000000 // indirect
 	github.com/anthropics/anthropic-sdk-go v1.9.0 // indirect
 	github.com/google/jsonschema-go v0.3.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect

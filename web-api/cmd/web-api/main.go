@@ -9,6 +9,8 @@ import (
 
 	riskstorage "risk-engine/storage"
 
+	"execution/paperstore"
+
 	"web-api/internal/api"
 	"web-api/internal/storage"
 )
@@ -36,8 +38,14 @@ func run() error {
 	}
 	defer riskStore.Close()
 
+	paperStore, err := paperstore.New(context.Background(), dsn)
+	if err != nil {
+		return fmt.Errorf("connect paper storage: %w", err)
+	}
+	defer paperStore.Close()
+
 	frontendDir := os.Getenv("FRONTEND_DIST_DIR")
-	handler := api.NewServer(store, dsn, riskStore, frontendDir)
+	handler := api.NewServer(store, dsn, riskStore, paperStore, frontendDir)
 	addr := os.Getenv("WEB_API_ADDR")
 	if addr == "" {
 		addr = ":8080"

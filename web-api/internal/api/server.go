@@ -9,6 +9,8 @@ import (
 
 	riskstorage "risk-engine/storage"
 
+	"execution/paperstore"
+
 	"web-api/internal/storage"
 )
 
@@ -19,6 +21,7 @@ const (
 
 type dataStore interface {
 	RecentDecisions(context.Context, int) ([]storage.Decision, error)
+	RecentPaperDecisions(context.Context, int) ([]storage.Decision, error)
 	LiveRiskState(context.Context) (storage.RiskStateResponse, error)
 	RecentAnalysisRuns(context.Context, int) ([]storage.AnalysisRun, error)
 	AnalysisRunDetail(context.Context, string) (storage.AnalysisRunDetail, error)
@@ -26,13 +29,24 @@ type dataStore interface {
 	BacktestDetail(context.Context, string) (storage.BacktestDetail, error)
 	RecentEquitySnapshots(context.Context, int) ([]storage.EquityPoint, error)
 	RecentNews(context.Context, int) ([]storage.NewsItem, error)
+	LatestPrice(ctx context.Context, exchange, symbol, timeframe string) (price float64, found bool, err error)
 }
 
-// NewServer serves the API — read-only except for POST /api/backtests,
-// which triggers a real backtest run — and, when configured, the built
-// frontend files. dsn/riskStore back the one write endpoint (see
-// simulate.go); every other handler only ever touches store.
-func NewServer(store dataStore, dsn string, riskStore *riskstorage.Store, frontendDir string) http.Handler {
+// paperStore is the subset of *execution/paperstore.Store the simulation
+// endpoints call — narrowed so tests can fake it.
+type paperStore interface {
+	Enabled(context.Context) (bool, error)
+	SetEnabled(context.Context, bool) error
+	Portfolio(context.Context) (cash float64, positions map[string]float64, err error)
+	RecentFills(context.Context, int) ([]paperstore.Fill, error)
+}
+
+// NewServer serves the API — read-only except for POST /api/backtests
+// (triggers a real backtest run) and the simulation endpoints (toggle +
+// read the paper/live-validation portfolio) — and, when configured, the
+// built frontend files. dsn/riskStore back the backtest-trigger endpoint
+// (see simulate.go); every other handler only ever touches store/paper.
+func NewServer(store dataStore, dsn string, riskStore *riskstorage.Store, paper paperStore, frontendDir string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/decisions", handleDecisions(store))
 	mux.HandleFunc("GET /api/risk-state", handleRiskState(store))
@@ -44,6 +58,9 @@ func NewServer(store dataStore, dsn string, riskStore *riskstorage.Store, fronte
 	mux.HandleFunc("GET /api/equity-snapshots", handleEquitySnapshots(store))
 	mux.HandleFunc("GET /api/news", handleNews(store))
 	mux.HandleFunc("GET /api/config-status", handleConfigStatus())
+	mux.HandleFunc("GET /api/simulation/status", handleSimulationStatus(paper))
+	mux.HandleFunc("POST /api/simulation/toggle", handleSimulationToggle(paper))
+	mux.HandleFunc("GET /api/paper-decisions", handlePaperDecisions(store))
 	if frontendDir != "" {
 		mux.Handle("/", http.FileServer(http.Dir(frontendDir)))
 	}

@@ -10,10 +10,12 @@ import (
 
 	riskstorage "risk-engine/storage"
 
+	"execution/paperstore"
+
 	"mcp/internal/storage"
 )
 
-func testStores(t *testing.T) (*storage.Store, *riskstorage.Store, string) {
+func testStores(t *testing.T) (*storage.Store, *riskstorage.Store, *paperstore.Store, string) {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
@@ -30,16 +32,21 @@ func testStores(t *testing.T) (*storage.Store, *riskstorage.Store, string) {
 		t.Fatalf("riskstorage.New: %v", err)
 	}
 	t.Cleanup(riskStore.Close)
-	return store, riskStore, dsn
+	paperStore, err := paperstore.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("paperstore.New: %v", err)
+	}
+	t.Cleanup(paperStore.Close)
+	return store, riskStore, paperStore, dsn
 }
 
 // TestServer_ListsAllSixTools connects a real MCP client to the real
 // server over an in-memory transport (no subprocess) and confirms every
-// tool this plan adds is actually registered and discoverable — the
+// tool registered on the server is actually discoverable — the
 // protocol-level check no direct Go-function-call test can give.
 func TestServer_ListsAllSixTools(t *testing.T) {
-	store, riskStore, dsn := testStores(t)
-	server := newServer(store, riskStore, dsn)
+	store, riskStore, paperStore, dsn := testStores(t)
+	server := newServer(store, riskStore, paperStore, dsn)
 
 	clientTransport, serverTransport := mcp.NewInMemoryTransports()
 	ctx := context.Background()
@@ -60,6 +67,7 @@ func TestServer_ListsAllSixTools(t *testing.T) {
 	wantTools := map[string]bool{
 		"get_latest_price": false, "get_risk_state": false, "set_risk_state": false,
 		"run_analysis": false, "run_strategist": false, "run_backtest": false,
+		"get_simulation_status": false, "set_simulation_enabled": false, "run_paper_strategist": false,
 	}
 	page, err := clientSession.ListTools(ctx, &mcp.ListToolsParams{})
 	if err != nil {
@@ -83,8 +91,8 @@ func TestServer_ListsAllSixTools(t *testing.T) {
 // function in isolation — actually works. get_risk_state is picked
 // because it needs no fixture data, unlike the other five tools.
 func TestServer_GetRiskStateRoundTrips(t *testing.T) {
-	store, riskStore, dsn := testStores(t)
-	server := newServer(store, riskStore, dsn)
+	store, riskStore, paperStore, dsn := testStores(t)
+	server := newServer(store, riskStore, paperStore, dsn)
 
 	clientTransport, serverTransport := mcp.NewInMemoryTransports()
 	ctx := context.Background()

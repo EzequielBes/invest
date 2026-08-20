@@ -10,6 +10,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	riskstorage "risk-engine/storage"
 
+	"execution/paperstore"
+
 	"mcp/internal/storage"
 	"mcp/internal/tools"
 )
@@ -37,11 +39,17 @@ func run(ctx context.Context) error {
 	}
 	defer riskStore.Close()
 
-	server := newServer(store, riskStore, dsn)
+	paperStore, err := paperstore.New(ctx, dsn)
+	if err != nil {
+		return fmt.Errorf("connect paper storage: %w", err)
+	}
+	defer paperStore.Close()
+
+	server := newServer(store, riskStore, paperStore, dsn)
 	return server.Run(ctx, &mcp.StdioTransport{})
 }
 
-func newServer(store *storage.Store, riskStore *riskstorage.Store, dsn string) *mcp.Server {
+func newServer(store *storage.Store, riskStore *riskstorage.Store, paperStore *paperstore.Store, dsn string) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "investment-platform", Version: "0.1.0"}, nil)
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -89,6 +97,30 @@ func newServer(store *storage.Store, riskStore *riskstorage.Store, dsn string) *
 		Description: "Run a moving-average-cross backtest over a historical period, validated against the real risk engine, and return final metrics.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.RunBacktestArgs) (*mcp.CallToolResult, tools.RunBacktestResult, error) {
 		result, err := tools.RunBacktest(ctx, dsn, riskStore, args)
+		return nil, result, err
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "get_simulation_status",
+		Description: "Read whether paper/simulation mode is on and the current simulated portfolio (cash and positions).",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ tools.GetSimulationStatusArgs) (*mcp.CallToolResult, tools.SimulationStatusResult, error) {
+		result, err := tools.GetSimulationStatus(ctx, paperStore)
+		return nil, result, err
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "set_simulation_enabled",
+		Description: "Turn paper/simulation mode on or off. Must be on before run_paper_strategist will run a cycle.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.SetSimulationEnabledArgs) (*mcp.CallToolResult, tools.SimulationStatusResult, error) {
+		result, err := tools.SetSimulationEnabled(ctx, paperStore, args)
+		return nil, result, err
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "run_paper_strategist",
+		Description: "Runs the exact same strategist pipeline as run_strategist (real LLM decision, real risk-engine validation) from an existing analysis_run_id, but fills approved trades against a simulated portfolio instead of the real Binance testnet account. Use this to validate decision accuracy over time before trusting run_strategist with real execution. Requires simulation to be enabled via set_simulation_enabled.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.RunPaperStrategistArgs) (*mcp.CallToolResult, tools.RunStrategistResult, error) {
+		result, err := tools.RunPaperStrategist(ctx, dsn, riskStore, paperStore, args)
 		return nil, result, err
 	})
 

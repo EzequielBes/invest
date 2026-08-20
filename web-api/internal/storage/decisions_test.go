@@ -35,6 +35,53 @@ func TestRecentDecisions_ReturnsNewestFirstUpToLimit(t *testing.T) {
 	}
 }
 
+func TestRecentDecisions_ExcludesPaperDecisions(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	runID := testID(t, "decision-run")
+	realID := testID(t, "decision-real")
+	paperID := testID(t, "decision-paper")
+	now := time.Now().UTC()
+
+	seedDecision(t, store, realID, runID, now)
+	t.Cleanup(func() { deleteDecisionForTest(t, store, realID) })
+	seedDecision(t, store, paperID, runID, now)
+	t.Cleanup(func() { deleteDecisionForTest(t, store, paperID) })
+	if _, err := store.pool.Exec(ctx, `INSERT INTO paper_decision_ids (id, created_at) VALUES ($1, now())`, paperID); err != nil {
+		t.Fatalf("seed paper_decision_ids: %v", err)
+	}
+	t.Cleanup(func() {
+		store.pool.Exec(context.Background(), `DELETE FROM paper_decision_ids WHERE id = $1`, paperID)
+	})
+
+	real, err := store.RecentDecisions(ctx, 50)
+	if err != nil {
+		t.Fatalf("RecentDecisions: %v", err)
+	}
+	for _, d := range real {
+		if d.ID == paperID {
+			t.Error("RecentDecisions included a paper decision")
+		}
+	}
+
+	paper, err := store.RecentPaperDecisions(ctx, 50)
+	if err != nil {
+		t.Fatalf("RecentPaperDecisions: %v", err)
+	}
+	found := false
+	for _, d := range paper {
+		if d.ID == realID {
+			t.Error("RecentPaperDecisions included a real decision")
+		}
+		if d.ID == paperID {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("RecentPaperDecisions did not include the paper decision")
+	}
+}
+
 func TestRecentDecisions_NoRowsReturnsEmptySliceNotNil(t *testing.T) {
 	store := testStore(t)
 

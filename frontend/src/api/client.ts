@@ -131,6 +131,22 @@ export interface ConfigStatus {
   openai_configured: boolean;
 }
 
+export interface PaperFill {
+  id: string;
+  asset: string;
+  side: string;
+  quantity: number;
+  price: number;
+  created_at: string;
+}
+
+export interface SimulationStatus {
+  enabled: boolean;
+  cash: number;
+  positions: Record<string, number>;
+  fills: PaperFill[];
+}
+
 export interface TriggerBacktestRequest {
   period_start: string;
   period_end: string;
@@ -189,4 +205,7 @@ export const api = {
   equitySnapshots: () => getJSON<EquityPoint[]>('/api/equity-snapshots'),
   news: () => getJSON<NewsItem[]>('/api/news'),
   configStatus: () => getJSON<ConfigStatus>('/api/config-status'),
+  paperDecisions: () => getJSON<Decision[]>('/api/paper-decisions'),
+  simulationStatus: () => getJSON<SimulationStatus>('/api/simulation/status'),
+  toggleSimulation: (enabled: boolean) => postJSON<{ enabled: boolean }, SimulationStatus>('/api/simulation/toggle', { enabled }),
 };

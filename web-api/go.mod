@@ -3,6 +3,7 @@ module web-api
 go 1.22
 
 require (
+	execution v0.0.0-00010101000000-000000000000
 	github.com/jackc/pgx/v5 v5.6.0
 	risk-engine v0.0.0
 	simulation v0.0.0-00010101000000-000000000000
@@ -21,3 +22,5 @@ require (
 replace risk-engine => ../risk-engine
 
 replace simulation => ../simulation
+
+replace execution => ../execution

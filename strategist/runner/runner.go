@@ -176,15 +176,29 @@ func report(asset string, outcome strategist.Outcome) {
 	fmt.Fprintf(os.Stderr, "%s: %s %.6f (%s, %s) — %s\n", asset, outcome.Decision.Side, outcome.Quantity, status, execStatus, outcome.Decision.Rationale)
 }
 
-// RunWithDSN connects its own storage and execution client using dsn,
-// calls Run, then reads back the decisions it persisted (Run itself only
-// returns error) — same cross-module-visibility reason as
-// analysis/runner.RunWithDSN (sub-project 6, Task 6): callers outside
-// this module can't import strategist/internal/storage,
-// strategist/internal/llm, or execution/internal/* directly, so this
-// function is the module's public entry point for exactly that kind of
-// caller (the MCP server).
+// RunWithDSN connects its own storage and a real Binance execution client
+// using dsn, then delegates to RunWithExecutor.
 func RunWithDSN(ctx context.Context, dsn string, riskStore *riskstorage.Store, analysisRunID string, assets []string, dailyLoss, weeklyLoss, drawdown float64, consecutiveLosses int) ([]storage.Decision, error) {
+	execClient, err := executor.NewClient(ctx, dsn)
+	if err != nil {
+		return nil, err
+	}
+	defer execClient.Close()
+	return RunWithExecutor(ctx, dsn, riskStore, execClient, analysisRunID, assets, dailyLoss, weeklyLoss, drawdown, consecutiveLosses)
+}
+
+// RunWithExecutor mirrors RunWithDSN but takes execClient as a parameter
+// instead of always constructing the real Binance executor — lets a
+// caller substitute another executor.Client implementation (e.g.
+// execution/paperexec's simulated fills) to run the exact same
+// analysis-results-to-decision pipeline (real LLM call, real risk-engine
+// validation) without ever touching a real or testnet exchange account.
+// Same cross-module-visibility reason as analysis/runner.RunWithDSN
+// (sub-project 6, Task 6): callers outside this module can't import
+// strategist/internal/storage or strategist/internal/llm directly, so
+// this function is the module's public entry point for exactly that kind
+// of caller (the MCP server).
+func RunWithExecutor(ctx context.Context, dsn string, riskStore *riskstorage.Store, execClient executor.Client, analysisRunID string, assets []string, dailyLoss, weeklyLoss, drawdown float64, consecutiveLosses int) ([]storage.Decision, error) {
 	store, err := storage.New(ctx, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("connect strategist storage: %w", err)
@@ -194,11 +208,6 @@ func RunWithDSN(ctx context.Context, dsn string, riskStore *riskstorage.Store, a
 	if err != nil {
 		return nil, err
 	}
-	execClient, err := executor.NewClient(ctx, dsn)
-	if err != nil {
-		return nil, err
-	}
-	defer execClient.Close()
 	startedAt := time.Now().UTC()
 	if err := Run(ctx, store, riskStore, client, execClient, analysisRunID, assets, dailyLoss, weeklyLoss, drawdown, consecutiveLosses); err != nil {
 		return nil, err

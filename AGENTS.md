@@ -149,6 +149,44 @@ Don't try to suppress this; `frontend/.gitignore` already excludes all of
 it (along with `node_modules/` and `dist/`) — never `git add -A` in
 `frontend/` without checking that gitignore is still in place first.
 
+## Simulation / paper trading ("Ao Vivo")
+
+`run_paper_strategist` (an MCP tool, alongside `get_simulation_status` /
+`set_simulation_enabled`) runs the exact same decision pipeline as
+`run_strategist` — real analysis results, real LLM call via
+`strategist/internal/llm`, real `risk-engine` validation — but fills
+approved trades against `execution/paperstore`'s simulated cash/positions
+ledger instead of the Binance testnet. This is how decision *accuracy* is
+validated (does the real pipeline actually pick good trades?) before
+trusting `run_strategist` with a real/testnet account: same brain, fake
+money.
+
+- `execution/paperexec.Client` implements `execution/executor.Client`
+  (pattern 3 above — public-package reuse, no `internal/` involved) and is
+  passed into `strategist/runner.RunWithExecutor` (a `RunWithDSN` variant
+  that takes the executor as a parameter instead of always constructing
+  the real Binance one).
+- `execution/paperstore` (public) owns `paper_state` (singleton
+  cash/positions/enabled row), `paper_fills`, and `paper_decision_ids`.
+  `mcp`, `web-api`, and `execution/paperexec` all import it directly —
+  three separate `pgxpool.Pool`s on the same DSN, same pattern as
+  `risk-engine/storage` being imported by everyone.
+- `run_paper_strategist` refuses to run when `paper_state.enabled` is
+  false — flip it with `set_simulation_enabled` (also exposed as a toggle
+  switch on the frontend's "Ao Vivo" tab) so no LLM call is spent on a
+  cycle nobody asked for.
+- **There is no background scheduler anywhere in this repo** — automation
+  for both real and paper trading is agent-orchestrated: something with an
+  MCP client (a Claude Code session, a Codex run) decides when to call
+  `run_analysis` → `run_strategist`/`run_paper_strategist`. "Ao Vivo" being
+  "fully automatic" means whatever loop already drives real trading also
+  drives the paper cycle while simulation is enabled — it does not mean a
+  new Go cron loop.
+- `web-api/internal/storage.RecentDecisions` excludes any row whose id is
+  in `paper_decision_ids` (pattern 2 — direct SQL read of another module's
+  table) so a paper cycle never shows up in the real Decisions dashboard;
+  `RecentPaperDecisions` is the inverse, for the "Ao Vivo" tab's history.
+
 ## Known deferred technical debt
 
 These are documented, deliberate, ruled-and-deferred gaps — not
