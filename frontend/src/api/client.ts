@@ -132,4 +132,5 @@ export const api = {
   analysisRunDetail: (id: string) => getJSON<AnalysisRunDetail>(`/api/analysis-runs/${id}`),
   backtests: () => getJSON<BacktestRun[]>('/api/backtests'),
   backtestDetail: (id: string) => getJSON<BacktestDetail>(`/api/backtests/${id}`),
+  equitySnapshots: () => getJSON<EquityPoint[]>('/api/equity-snapshots'),
 };

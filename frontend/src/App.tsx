@@ -2,15 +2,17 @@ import { useState } from 'react';
 import AnalysisRunsPage from './pages/AnalysisRunsPage';
 import BacktestsPage from './pages/BacktestsPage';
 import DecisionsPage from './pages/DecisionsPage';
+import EquityPage from './pages/EquityPage';
 import RiskStatePage from './pages/RiskStatePage';
 
-type Tab = 'decisions' | 'risk' | 'analysis' | 'backtests';
+type Tab = 'decisions' | 'risk' | 'analysis' | 'backtests' | 'equity';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'decisions', label: 'Decisoes' },
   { id: 'risk', label: 'Risco' },
   { id: 'analysis', label: 'Analises' },
   { id: 'backtests', label: 'Backtests' },
+  { id: 'equity', label: 'Patrimonio' },
 ];
 
 export default function App() {
@@ -47,6 +49,7 @@ export default function App() {
         {tab === 'risk' && <RiskStatePage />}
         {tab === 'analysis' && <AnalysisRunsPage />}
         {tab === 'backtests' && <BacktestsPage />}
+        {tab === 'equity' && <EquityPage />}
       </main>
     </div>
   );
