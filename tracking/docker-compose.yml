@@ -1,0 +1,25 @@
+services:
+  go:
+    image: golang:1.22
+    working_dir: /app
+    volumes:
+      - .:/app
+      - ../execution:/execution
+      - ../risk-engine:/risk-engine
+      - go-mod-cache:/go/pkg/mod
+    environment:
+      DATABASE_URL: postgres://marketdata:marketdata@timescaledb:5432/marketdata?sslmode=disable
+      TEST_DATABASE_URL: postgres://marketdata:marketdata@timescaledb:5432/marketdata?sslmode=disable
+      BINANCE_API_KEY: ${BINANCE_API_KEY:-}
+      BINANCE_API_SECRET: ${BINANCE_API_SECRET:-}
+      SNAPSHOT_INTERVAL_MINUTES: "15"
+    networks:
+      - market-data_default
+    command: ["go", "run", "./cmd/tracker"]
+
+networks:
+  market-data_default:
+    external: true
+
+volumes:
+  go-mod-cache:
