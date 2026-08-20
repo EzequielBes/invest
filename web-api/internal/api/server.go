@@ -1,0 +1,67 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"log"
+	"net/http"
+	"strconv"
+
+	"web-api/internal/storage"
+)
+
+const (
+	defaultLimit = 50
+	maxLimit     = 500
+)
+
+type dataStore interface {
+	RecentDecisions(context.Context, int) ([]storage.Decision, error)
+	LiveRiskState(context.Context) (storage.RiskStateResponse, error)
+	RecentAnalysisRuns(context.Context, int) ([]storage.AnalysisRun, error)
+	AnalysisRunDetail(context.Context, string) (storage.AnalysisRunDetail, error)
+	RecentBacktests(context.Context, int) ([]storage.BacktestRun, error)
+	BacktestDetail(context.Context, string) (storage.BacktestDetail, error)
+}
+
+// NewServer serves the read-only API and, when configured, built frontend files.
+func NewServer(store dataStore, frontendDir string) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/decisions", handleDecisions(store))
+	mux.HandleFunc("GET /api/risk-state", handleRiskState(store))
+	mux.HandleFunc("GET /api/analysis-runs", handleAnalysisRuns(store))
+	mux.HandleFunc("GET /api/analysis-runs/{id}", handleAnalysisRunDetail(store))
+	mux.HandleFunc("GET /api/backtests", handleBacktests(store))
+	mux.HandleFunc("GET /api/backtests/{id}", handleBacktestDetail(store))
+	if frontendDir != "" {
+		mux.Handle("/", http.FileServer(http.Dir(frontendDir)))
+	}
+	return mux
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		log.Printf("web-api: encode response: %v", err)
+	}
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"error": message})
+}
+
+func parseLimit(r *http.Request) int {
+	raw := r.URL.Query().Get("limit")
+	if raw == "" {
+		return defaultLimit
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit <= 0 {
+		return defaultLimit
+	}
+	if limit > maxLimit {
+		return maxLimit
+	}
+	return limit
+}
