@@ -153,13 +153,51 @@ func TestCheckLiquidity_RejectsOnLookupError(t *testing.T) {
 }
 
 func TestCheckLiquidity_AllowsHighVolume(t *testing.T) {
-	base := time.Now().UTC().Add(-2 * time.Minute)
-	md := &fakeMarketData{recent: []storage.Candle{
-		{Time: base, Close: 100, Volume: 10000},
-		{Time: base.Add(time.Minute), Close: 100, Volume: 10000},
-	}}
+	base := time.Now().UTC().Truncate(time.Minute).Add(-60 * time.Minute)
+	candles := make([]storage.Candle, 60)
+	for i := range candles {
+		candles[i] = storage.Candle{Time: base.Add(time.Duration(i) * time.Minute), Close: 100, Volume: 10000}
+	}
+	md := &fakeMarketData{recent: candles}
 	result := checkLiquidity(context.Background(), md, "BTC", 100000, nil)
 	if !result.Passed {
 		t.Fatalf("expected approval: measured liquidity %.2f should meet limit 100000", result.Measured)
+	}
+}
+
+func TestCheckVolatility_RejectsCandleGap(t *testing.T) {
+	base := time.Now().UTC().Truncate(time.Minute).Add(-61 * time.Minute)
+	candles := make([]storage.Candle, 60)
+	for i := range candles {
+		candles[i] = storage.Candle{Time: base.Add(time.Duration(i) * time.Minute), Close: 100}
+	}
+	candles[30].Time = candles[29].Time.Add(2 * time.Minute)
+	result := checkVolatility(context.Background(), &fakeMarketData{recent: candles}, "BTC", 0.02, nil)
+	if result.Passed || !strings.Contains(result.Detail, "consecutive") {
+		t.Fatalf("result = %+v, want rejected gap", result)
+	}
+}
+
+func TestAssessEligibilityRejectsIncompleteEvidence(t *testing.T) {
+	result := AssessEligibility("NEW", storage.EligibilityMetrics{}, time.Now().UTC())
+	if result.Eligible || len(result.Reasons) != 4 {
+		t.Fatalf("result = %+v, want all missing-evidence gates rejected", result)
+	}
+}
+
+func TestAssessEligibilityAllowsCompleteEvidence(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Minute)
+	candles := make([]storage.Candle, 60)
+	for i := range candles {
+		candles[i] = storage.Candle{Time: now.Add(time.Duration(i-60) * time.Minute), Close: 100}
+	}
+	result := AssessEligibility("BTC", storage.EligibilityMetrics{
+		HistoryStartedAt:       now.Add(-eligibilityHistory),
+		ThirtyDayClosedCandles: int(float64(eligibilityWindow/time.Minute) * minimumCoverage),
+		ActiveExchangeCount:    minimumActiveExchanges,
+		RecentCandles:          candles,
+	}, now)
+	if !result.Eligible {
+		t.Fatalf("result = %+v, want eligible", result)
 	}
 }

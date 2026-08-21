@@ -17,6 +17,43 @@ import (
 // this phase.
 const ReferenceExchange = "binance"
 
+const (
+	eligibilityHistory     = 180 * 24 * time.Hour
+	eligibilityWindow      = 30 * 24 * time.Hour
+	minimumCoverage        = 0.95
+	minimumActiveExchanges = 2
+	minimumConsecutiveBars = 60
+)
+
+// EligibilityResult is a deterministic preflight result. It narrows the
+// automation universe; it never authorizes an order by itself.
+type EligibilityResult struct {
+	Asset    string
+	Eligible bool
+	Reasons  []string
+}
+
+// AssessEligibility applies the baseline universe policy using only closed
+// market data. Missing data is a rejection, never an implicit approval.
+func AssessEligibility(asset string, metrics storage.EligibilityMetrics, now time.Time) EligibilityResult {
+	result := EligibilityResult{Asset: asset, Eligible: true}
+	if metrics.HistoryStartedAt.IsZero() || metrics.HistoryStartedAt.After(now.Add(-eligibilityHistory)) {
+		result.Reasons = append(result.Reasons, "requires at least 180 days of Binance candle history")
+	}
+	expected := int(eligibilityWindow / time.Minute)
+	if float64(metrics.ThirtyDayClosedCandles)/float64(expected) < minimumCoverage {
+		result.Reasons = append(result.Reasons, "requires at least 95% closed 1m candle coverage over 30 days")
+	}
+	if metrics.ActiveExchangeCount < minimumActiveExchanges {
+		result.Reasons = append(result.Reasons, "requires fresh candles from at least two exchanges")
+	}
+	if !consecutiveMinuteCandles(metrics.RecentCandles, minimumConsecutiveBars) {
+		result.Reasons = append(result.Reasons, "requires 60 consecutive closed Binance 1m candles")
+	}
+	result.Eligible = len(result.Reasons) == 0
+	return result
+}
+
 // marketDataReader is the slice of *storage.Store this file depends on, so
 // quality rules are unit-testable with a fake instead of a real database.
 type marketDataReader interface {
@@ -49,8 +86,8 @@ func checkVolatility(ctx context.Context, md marketDataReader, asset string, max
 	if err != nil {
 		return RuleResult{Rule: "volatility", Passed: false, Limit: maxVolatility, Detail: fmt.Sprintf("market data lookup failed: %v", err)}
 	}
-	if len(candles) < 2 {
-		return RuleResult{Rule: "volatility", Passed: false, Limit: maxVolatility, Detail: "insufficient market data"}
+	if !consecutiveMinuteCandles(candles, minimumConsecutiveBars) {
+		return RuleResult{Rule: "volatility", Passed: false, Limit: maxVolatility, Detail: "requires 60 consecutive closed 1m candles"}
 	}
 	vol := stddevReturns(candles)
 	return RuleResult{
@@ -90,8 +127,8 @@ func checkLiquidity(ctx context.Context, md marketDataReader, asset string, minL
 	if err != nil {
 		return RuleResult{Rule: "liquidity", Passed: false, Limit: minLiquidity, Detail: fmt.Sprintf("market data lookup failed: %v", err)}
 	}
-	if len(candles) == 0 {
-		return RuleResult{Rule: "liquidity", Passed: false, Limit: minLiquidity, Detail: "insufficient market data"}
+	if !consecutiveMinuteCandles(candles, minimumConsecutiveBars) {
+		return RuleResult{Rule: "liquidity", Passed: false, Limit: minLiquidity, Detail: "requires 60 consecutive closed 1m candles"}
 	}
 	var quoteVolume float64
 	for _, c := range candles {
@@ -102,4 +139,16 @@ func checkLiquidity(ctx context.Context, md marketDataReader, asset string, minL
 		Measured: quoteVolume, Limit: minLiquidity,
 		Detail: fmt.Sprintf("quote volume over last %d candles: %.2f", len(candles), quoteVolume),
 	}
+}
+
+func consecutiveMinuteCandles(candles []storage.Candle, want int) bool {
+	if len(candles) != want {
+		return false
+	}
+	for i := 1; i < len(candles); i++ {
+		if !candles[i].Time.Equal(candles[i-1].Time.Add(time.Minute)) {
+			return false
+		}
+	}
+	return true
 }

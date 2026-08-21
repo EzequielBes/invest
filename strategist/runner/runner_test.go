@@ -36,6 +36,18 @@ func TestValidateRejectsInvalidIntentAndTarget(t *testing.T) {
 	}
 }
 
+func TestProjectPortfolioUsesFilledQuantity(t *testing.T) {
+	portfolio := risk.PortfolioState{Cash: 1000, Positions: map[string]risk.Position{"BTC": {Asset: "BTC", Quantity: 1, Value: 100}}}
+	projected := projectPortfolio(portfolio, "BTC", risk.SideBuy, 2, 100)
+	if projected.Cash != 800 || projected.Positions["BTC"].Quantity != 3 || projected.Positions["BTC"].Value != 300 {
+		t.Fatalf("buy projection = %+v, want cash 800 and BTC quantity/value 3/300", projected)
+	}
+	projected = projectPortfolio(projected, "BTC", risk.SideSell, 5, 100)
+	if projected.Cash != 1100 || len(projected.Positions) != 0 {
+		t.Fatalf("sell projection = %+v, want capped sale and no BTC position", projected)
+	}
+}
+
 func TestApplyIntentsIsIdempotentPerTarget(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {

@@ -126,7 +126,8 @@ func ApplyIntentsWithDSN(ctx context.Context, dsn string, riskStore *riskstorage
 			return nil, fmt.Errorf("build %s portfolio: %w", target.ID, err)
 		}
 		for _, intent := range intents {
-			if err := apply(ctx, store, riskStore, strategy.AnalysisRunID, target, intent, portfolio, value); err != nil {
+			portfolio, value, err = apply(ctx, store, riskStore, strategy.AnalysisRunID, target, intent, portfolio, value)
+			if err != nil {
 				return nil, err
 			}
 		}
@@ -188,13 +189,13 @@ func buildPortfolio(ctx context.Context, store *storage.Store, positions map[str
 	return risk.PortfolioState{Positions: riskPositions, Cash: cash, DailyLoss: target.DailyLoss, WeeklyLoss: target.WeeklyLoss, Drawdown: target.Drawdown, ConsecutiveLosses: target.ConsecutiveLosses}, total, nil
 }
 
-func apply(ctx context.Context, store *storage.Store, riskStore *riskstorage.Store, runID string, target Target, intent Intent, portfolio risk.PortfolioState, portfolioValue float64) error {
+func apply(ctx context.Context, store *storage.Store, riskStore *riskstorage.Store, runID string, target Target, intent Intent, portfolio risk.PortfolioState, portfolioValue float64) (risk.PortfolioState, float64, error) {
 	price, found, err := store.LatestPrice(ctx, risk.ReferenceExchange, intent.Asset, priceTimeframe)
 	if err != nil || !found {
 		if err != nil {
-			return fmt.Errorf("read %s price: %w", intent.Asset, err)
+			return portfolio, portfolioValue, fmt.Errorf("read %s price: %w", intent.Asset, err)
 		}
-		return fmt.Errorf("no price data for %s", intent.Asset)
+		return portfolio, portfolioValue, fmt.Errorf("no price data for %s", intent.Asset)
 	}
 	quantity := 0.0
 	if intent.Side != "hold" {
@@ -206,26 +207,61 @@ func apply(ctx context.Context, store *storage.Store, riskStore *riskstorage.Sto
 	application := storage.IntentApplication{IntentID: intent.ID, TargetID: target.ID, AnalysisRunID: runID, Asset: intent.Asset, Side: intent.Side, Confidence: intent.Confidence, SizingPct: intent.SizingPct, Rationale: intent.Rationale, ProposedQuantity: quantity, ProposedValue: quantity * price, ExecutionStatus: "applying", CreatedAt: time.Now().UTC()}
 	created, err := store.CreateIntentApplication(ctx, application)
 	if err != nil || !created {
-		return err
+		return portfolio, portfolioValue, err
 	}
 	if intent.Side == "hold" || quantity <= 0 {
-		return store.CompleteIntentApplication(ctx, runID, intent.ID, target.ID, "not_applicable", nil, nil, nil)
+		return portfolio, portfolioValue, store.CompleteIntentApplication(ctx, runID, intent.ID, target.ID, "not_applicable", nil, nil, nil)
 	}
 	decision, err := risk.Evaluate(ctx, riskStore, portfolio, risk.ProposedOperation{Asset: intent.Asset, Side: risk.Side(intent.Side), Quantity: quantity, Value: application.ProposedValue}, risk.EvalOptions{})
 	if err != nil {
-		return store.SetIntentApplicationRisk(ctx, runID, intent.ID, target.ID, "risk_error", nil, nil)
+		return portfolio, portfolioValue, store.SetIntentApplicationRisk(ctx, runID, intent.ID, target.ID, "risk_error", nil, nil)
 	}
 	if !decision.Allowed {
-		return store.SetIntentApplicationRisk(ctx, runID, intent.ID, target.ID, "rejected", &decision.Allowed, decision.Reasons)
+		return portfolio, portfolioValue, store.SetIntentApplicationRisk(ctx, runID, intent.ID, target.ID, "rejected", &decision.Allowed, decision.Reasons)
 	}
 	if err := store.SetIntentApplicationRisk(ctx, runID, intent.ID, target.ID, "executing", &decision.Allowed, decision.Reasons); err != nil {
-		return err
+		return portfolio, portfolioValue, err
 	}
 	outcome, err := target.Executor.Execute(ctx, intent.Asset, risk.Side(intent.Side), quantity, price, intent.ID)
 	if err != nil {
-		return store.CompleteIntentApplication(ctx, runID, intent.ID, target.ID, "execution_error", nil, nil, nil)
+		return portfolio, portfolioValue, store.CompleteIntentApplication(ctx, runID, intent.ID, target.ID, "execution_error", nil, nil, nil)
 	}
-	return store.CompleteIntentApplication(ctx, runID, intent.ID, target.ID, outcome.Status, &outcome.OrderID, &outcome.FilledQuantity, &outcome.FilledPrice)
+	if err := store.CompleteIntentApplication(ctx, runID, intent.ID, target.ID, outcome.Status, &outcome.OrderID, &outcome.FilledQuantity, &outcome.FilledPrice); err != nil {
+		return portfolio, portfolioValue, err
+	}
+	return projectPortfolio(portfolio, intent.Asset, risk.Side(intent.Side), outcome.FilledQuantity, outcome.FilledPrice), portfolioValue, nil
+}
+
+func projectPortfolio(portfolio risk.PortfolioState, asset string, side risk.Side, quantity, price float64) risk.PortfolioState {
+	if quantity <= 0 || price <= 0 {
+		return portfolio
+	}
+	positions := make(map[string]risk.Position, len(portfolio.Positions)+1)
+	for name, position := range portfolio.Positions {
+		positions[name] = position
+	}
+	value := quantity * price
+	position := positions[asset]
+	position.Asset = asset
+	switch side {
+	case risk.SideBuy:
+		position.Quantity += quantity
+		position.Value += value
+		portfolio.Cash -= value
+	case risk.SideSell:
+		quantity = math.Min(quantity, position.Quantity)
+		value = quantity * price
+		position.Quantity -= quantity
+		position.Value = math.Max(0, position.Value-value)
+		portfolio.Cash += value
+	}
+	if position.Quantity <= 0 {
+		delete(positions, asset)
+	} else {
+		positions[asset] = position
+	}
+	portfolio.Positions = positions
+	return portfolio
 }
 
 func applications(ctx context.Context, store *storage.Store, analysisRunID string, intents []Intent) ([]Application, error) {
