@@ -116,6 +116,42 @@ export interface BacktestDetail {
   equity_curve: EquityPoint[];
 }
 
+export interface ValidationRun {
+  id: string;
+  hypothesis_id: string;
+  status: string;
+  config_hash: string;
+  backtest_run_id?: string;
+  git_commit?: string;
+  error?: string;
+  created_at: string;
+  completed_at?: string;
+}
+
+export interface ValidationMetric {
+  id: string;
+  name: string;
+  value: number;
+  segment: string;
+  unit: string;
+  evidence: Record<string, unknown>;
+}
+
+export interface ValidationFinding {
+  id: string;
+  severity: string;
+  rule: string;
+  message: string;
+  evidence: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface ValidationRunDetail {
+  run: ValidationRun;
+  metrics: ValidationMetric[];
+  findings: ValidationFinding[];
+}
+
 export interface NewsItem {
   id: number;
   source: string;
@@ -201,6 +237,8 @@ export const api = {
   analysisRunDetail: (id: string) => getJSON<AnalysisRunDetail>(`/api/analysis-runs/${id}`),
   backtests: () => getJSON<BacktestRun[]>('/api/backtests'),
   backtestDetail: (id: string) => getJSON<BacktestDetail>(`/api/backtests/${id}`),
+  validationRuns: () => getJSON<ValidationRun[]>('/api/validation-runs'),
+  validationRunDetail: (id: string) => getJSON<ValidationRunDetail>(`/api/validation-runs/${id}`),
   triggerBacktest: (req: TriggerBacktestRequest) => postJSON<TriggerBacktestRequest, TriggerBacktestResponse>('/api/backtests', req),
   equitySnapshots: () => getJSON<EquityPoint[]>('/api/equity-snapshots'),
   news: () => getJSON<NewsItem[]>('/api/news'),

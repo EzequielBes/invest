@@ -8,8 +8,9 @@ import OverviewPage from './pages/OverviewPage';
 import PaperTradingPage from './pages/PaperTradingPage';
 import RiskStatePage from './pages/RiskStatePage';
 import SimulatePage from './pages/SimulatePage';
+import ValidationRunsPage from './pages/ValidationRunsPage';
 
-type Tab = 'overview' | 'decisions' | 'risk' | 'analysis' | 'backtests' | 'simulate' | 'paper' | 'equity' | 'news';
+type Tab = 'overview' | 'decisions' | 'risk' | 'analysis' | 'backtests' | 'validation' | 'simulate' | 'paper' | 'equity' | 'news';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'overview', label: 'Visao Geral' },
@@ -17,6 +18,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'risk', label: 'Risco' },
   { id: 'analysis', label: 'Analises' },
   { id: 'backtests', label: 'Backtests' },
+  { id: 'validation', label: 'Validacao' },
   { id: 'simulate', label: 'Simular' },
   { id: 'paper', label: 'Ao Vivo' },
   { id: 'equity', label: 'Patrimonio' },
@@ -79,6 +81,7 @@ export default function App() {
         {tab === 'risk' && <RiskStatePage />}
         {tab === 'analysis' && <AnalysisRunsPage />}
         {tab === 'backtests' && <BacktestsPage />}
+        {tab === 'validation' && <ValidationRunsPage />}
         {tab === 'simulate' && <SimulatePage />}
         {tab === 'paper' && <PaperTradingPage />}
         {tab === 'equity' && <EquityPage />}

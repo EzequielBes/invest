@@ -14,27 +14,30 @@ import (
 )
 
 type fakeStore struct {
-	decisions       []storage.Decision
-	decisionsErr    error
-	paperDecisions  []storage.Decision
-	paperDecErr     error
-	riskState       storage.RiskStateResponse
-	riskStateErr    error
-	analysisRuns    []storage.AnalysisRun
-	analysisErr     error
-	analysisDetail  storage.AnalysisRunDetail
-	backtests       []storage.BacktestRun
-	backtestsErr    error
-	backtestDetail  storage.BacktestDetail
-	backtestErr     error
-	equitySnapshots []storage.EquityPoint
-	equityErr       error
-	news            []storage.NewsItem
-	newsErr         error
-	price           float64
-	priceFound      bool
-	priceErr        error
-	lastLimit       int
+	decisions        []storage.Decision
+	decisionsErr     error
+	paperDecisions   []storage.Decision
+	paperDecErr      error
+	riskState        storage.RiskStateResponse
+	riskStateErr     error
+	analysisRuns     []storage.AnalysisRun
+	analysisErr      error
+	analysisDetail   storage.AnalysisRunDetail
+	backtests        []storage.BacktestRun
+	backtestsErr     error
+	backtestDetail   storage.BacktestDetail
+	backtestErr      error
+	validationRuns   []storage.ValidationRun
+	validationErr    error
+	validationDetail storage.ValidationRunDetail
+	equitySnapshots  []storage.EquityPoint
+	equityErr        error
+	news             []storage.NewsItem
+	newsErr          error
+	price            float64
+	priceFound       bool
+	priceErr         error
+	lastLimit        int
 }
 
 func (f *fakeStore) RecentDecisions(_ context.Context, limit int) ([]storage.Decision, error) {
@@ -61,6 +64,13 @@ func (f *fakeStore) RecentBacktests(_ context.Context, limit int) ([]storage.Bac
 }
 func (f *fakeStore) BacktestDetail(context.Context, string) (storage.BacktestDetail, error) {
 	return f.backtestDetail, f.backtestErr
+}
+func (f *fakeStore) RecentValidationRuns(_ context.Context, limit int) ([]storage.ValidationRun, error) {
+	f.lastLimit = limit
+	return f.validationRuns, f.validationErr
+}
+func (f *fakeStore) ValidationRunDetail(context.Context, string) (storage.ValidationRunDetail, error) {
+	return f.validationDetail, f.validationErr
 }
 func (f *fakeStore) RecentEquitySnapshots(_ context.Context, limit int) ([]storage.EquityPoint, error) {
 	f.lastLimit = limit
@@ -144,15 +154,46 @@ func TestParseLimitDefaultInvalidAndClamped(t *testing.T) {
 }
 
 func TestDetailEndpointsReturnNotFound(t *testing.T) {
-	for _, path := range []string{"/api/analysis-runs/missing", "/api/backtests/missing"} {
+	for _, path := range []string{"/api/analysis-runs/missing", "/api/backtests/missing", "/api/validation-runs/missing"} {
 		t.Run(path, func(t *testing.T) {
-			store := &fakeStore{analysisErr: storage.ErrNotFound, backtestErr: storage.ErrNotFound}
+			store := &fakeStore{analysisErr: storage.ErrNotFound, backtestErr: storage.ErrNotFound, validationErr: storage.ErrNotFound}
 			recorder := httptest.NewRecorder()
 			newTestServer(store).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
 			if recorder.Code != http.StatusNotFound {
 				t.Errorf("status = %d, want 404", recorder.Code)
 			}
 		})
+	}
+}
+
+func TestValidationRunsEndpointsReturnReports(t *testing.T) {
+	store := &fakeStore{
+		validationRuns: []storage.ValidationRun{{ID: "vr1", Status: "completed", ConfigHash: "abc123"}},
+		validationDetail: storage.ValidationRunDetail{
+			Run:      storage.ValidationRun{ID: "vr1", Status: "completed", ConfigHash: "abc123"},
+			Metrics:  []storage.ValidationMetric{{Name: "max_drawdown_pct", Value: 12.5, Unit: "pct", Segment: "backtest"}},
+			Findings: []storage.ValidationFinding{{Severity: "warning", Rule: "declared_cost", Message: "costs were declared"}},
+		},
+	}
+	server := newTestServer(store)
+	for _, path := range []string{"/api/validation-runs?limit=1", "/api/validation-runs/vr1"} {
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "completed") {
+			t.Fatalf("%s status/body = %d/%s, want validation report", path, recorder.Code, recorder.Body.String())
+		}
+	}
+	if store.lastLimit != 1 {
+		t.Errorf("limit = %d, want 1", store.lastLimit)
+	}
+}
+
+func TestValidationRunDetailReturnsNotFoundForRunningRun(t *testing.T) {
+	store := &fakeStore{validationErr: storage.ErrNotFound}
+	recorder := httptest.NewRecorder()
+	newTestServer(store).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/validation-runs/running", nil))
+	if recorder.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", recorder.Code, http.StatusNotFound)
 	}
 }
 
