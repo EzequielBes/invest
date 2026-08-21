@@ -77,18 +77,34 @@ func newServer(store *storage.Store, riskStore *riskstorage.Store, paperStore *p
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "run_analysis",
-		Description: "Run the analysis pipeline (technical, derivatives, news, risk-context, macro, and committee agents) for one or more assets. The committee produces an auditable deterministic opportunity ranking for paper trading.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.RunAnalysisArgs) (*mcp.CallToolResult, tools.RunAnalysisResult, error) {
-		result, err := tools.RunAnalysis(ctx, dsn, riskStore, args)
+		Name:        "prepare_analysis",
+		Description: "Collect and persist deterministic analysis context in a pending run. Submit provider-generated narratives in subsequent calls.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.PrepareAnalysisArgs) (*mcp.CallToolResult, tools.PrepareAnalysisResult, error) {
+		result, err := tools.PrepareAnalysis(ctx, dsn, riskStore, args)
 		return nil, result, err
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "run_strategist",
-		Description: "Runs the strategist pipeline: decides buy/sell/hold for each asset from an existing analysis_run_id, validates against the real risk engine, and executes approved decisions as real limit orders on the Binance Futures testnet.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.RunStrategistArgs) (*mcp.CallToolResult, tools.RunStrategistResult, error) {
-		result, err := tools.RunStrategist(ctx, dsn, riskStore, args)
+		Name:        "get_analysis_context",
+		Description: "Retrieve the persisted deterministic context for a pending analysis run before submitting provider-generated narratives.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.GetAnalysisContextArgs) (*mcp.CallToolResult, tools.PrepareAnalysisResult, error) {
+		result, err := tools.GetAnalysisContext(ctx, dsn, args)
+		return nil, result, err
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "submit_analysis_narratives",
+		Description: "Persist one provider-generated narrative stage for a pending analysis run. Submit technical, derivatives, news, risk_context, then macro in order.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.SubmitAnalysisNarrativesArgs) (*mcp.CallToolResult, tools.SubmissionResult, error) {
+		result, err := tools.SubmitAnalysisNarratives(ctx, dsn, args)
+		return nil, result, err
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "submit_committee_assessments",
+		Description: "Validate and persist structured provider-generated committee assessments, calculate deterministic rankings, and complete the analysis run.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.SubmitCommitteeAssessmentsArgs) (*mcp.CallToolResult, tools.SubmissionResult, error) {
+		result, err := tools.SubmitCommitteeAssessments(ctx, dsn, riskStore, args)
 		return nil, result, err
 	})
 
@@ -101,26 +117,34 @@ func newServer(store *storage.Store, riskStore *riskstorage.Store, paperStore *p
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "get_simulation_status",
-		Description: "Read whether paper/simulation mode is on and the current simulated portfolio (cash and positions).",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ tools.GetSimulationStatusArgs) (*mcp.CallToolResult, tools.SimulationStatusResult, error) {
-		result, err := tools.GetSimulationStatus(ctx, paperStore)
+		Name:        "prepare_strategy",
+		Description: "Read a completed analysis run's deterministic ranking so an external provider can form stable structured strategy intents.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.PrepareStrategyArgs) (*mcp.CallToolResult, tools.PrepareStrategyResult, error) {
+		result, err := tools.PrepareStrategy(ctx, dsn, args)
 		return nil, result, err
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "set_simulation_enabled",
-		Description: "Turn paper/simulation mode on or off. Must be on before run_paper_strategist will run a cycle.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.SetSimulationEnabledArgs) (*mcp.CallToolResult, tools.SimulationStatusResult, error) {
-		result, err := tools.SetSimulationEnabled(ctx, paperStore, args)
+		Name:        "apply_strategy_intents",
+		Description: "Risk-check and apply structured intents only to explicitly requested paper and/or testnet targets. Each requested target must be enabled; real trading is never an implicit target.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.ApplyStrategyIntentsArgs) (*mcp.CallToolResult, tools.ApplyStrategyIntentsResult, error) {
+		result, err := tools.ApplyStrategyIntents(ctx, dsn, riskStore, paperStore, args)
 		return nil, result, err
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "run_paper_strategist",
-		Description: "Runs the simulated strategist pipeline from an existing analysis_run_id. When available, it adds the analysis committee's deterministic ranking to the LLM context; run_strategist real is not affected. Approved trades fill against the simulated portfolio and still pass the real risk-engine. Requires simulation to be enabled via set_simulation_enabled.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.RunPaperStrategistArgs) (*mcp.CallToolResult, tools.RunStrategistResult, error) {
-		result, err := tools.RunPaperStrategist(ctx, dsn, riskStore, paperStore, args)
+		Name:        "get_automation_controls",
+		Description: "Read paper and testnet automation gates and the external agent selected to run automation.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ tools.GetAutomationControlsArgs) (*mcp.CallToolResult, tools.AutomationControlsResult, error) {
+		result, err := tools.GetAutomationControls(ctx, paperStore)
+		return nil, result, err
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "set_automation_controls",
+		Description: "Update one or more automation gates. Testnet execution stays disabled until testnet_enabled is explicitly set true.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.SetAutomationControlsArgs) (*mcp.CallToolResult, tools.AutomationControlsResult, error) {
+		result, err := tools.SetAutomationControls(ctx, paperStore, args)
 		return nil, result, err
 	})
 

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -21,11 +22,13 @@ import (
 // signed with HMAC-SHA256 per Binance's futures API auth scheme
 // (timestamp + all params, signed, appended as &signature=...).
 type Client struct {
-	http    *http.Client
-	limiter *rate.Limiter
-	apiKey  string
-	secret  string
-	baseURL string
+	http     *http.Client
+	limiter  *rate.Limiter
+	apiKey   string
+	secret   string
+	baseURL  string
+	filters  map[string]lotSize
+	filterMu sync.Mutex
 }
 
 // New constructs a Client. baseURL is a parameter (not hardcoded here) so
@@ -38,7 +41,32 @@ func New(apiKey, secret, baseURL string) *Client {
 		apiKey:  apiKey,
 		secret:  secret,
 		baseURL: baseURL,
+		filters: make(map[string]lotSize),
 	}
+}
+
+// publicRequest sends Binance's unsigned market-data requests.
+func (c *Client) publicRequest(ctx context.Context, path string, params url.Values) ([]byte, error) {
+	if err := c.limiter.Wait(ctx); err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path+"?"+params.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("binance: GET %s: status %d: %s", path, resp.StatusCode, body)
+	}
+	return body, nil
 }
 
 func (c *Client) sign(query string) string {

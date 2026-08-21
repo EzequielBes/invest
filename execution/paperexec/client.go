@@ -20,7 +20,14 @@ import (
 var _ executor.Client = (*Client)(nil)
 
 type Client struct {
-	store *paperstore.Store
+	store paperStore
+}
+
+type paperStore interface {
+	Close()
+	Portfolio(context.Context) (float64, map[string]float64, error)
+	Enabled(context.Context) (bool, error)
+	ApplyFill(context.Context, string, string, string, float64, float64) error
 }
 
 func New(ctx context.Context, dsn string) (*Client, error) {
@@ -45,6 +52,13 @@ func (c *Client) FetchPortfolio(ctx context.Context) (float64, map[string]float6
 // ApplyFill also records into paper_decision_ids so the real Decisions
 // dashboard can exclude it.
 func (c *Client) Execute(ctx context.Context, asset string, side risk.Side, quantity, price float64, clientOrderID string) (executor.Outcome, error) {
+	enabled, err := c.store.Enabled(ctx)
+	if err != nil {
+		return executor.Outcome{}, fmt.Errorf("paperexec: %s: check enabled: %w", asset, err)
+	}
+	if !enabled {
+		return executor.Outcome{}, fmt.Errorf("paperexec: %s: paper trading is disabled", asset)
+	}
 	if err := c.store.ApplyFill(ctx, clientOrderID, asset, string(side), quantity, price); err != nil {
 		return executor.Outcome{}, fmt.Errorf("paperexec: %s: apply fill: %w", asset, err)
 	}

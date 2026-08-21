@@ -149,43 +149,35 @@ Don't try to suppress this; `frontend/.gitignore` already excludes all of
 it (along with `node_modules/` and `dist/`) — never `git add -A` in
 `frontend/` without checking that gitignore is still in place first.
 
-## Simulation / paper trading ("Ao Vivo")
+## Subscription-driven MCP automation
 
-`run_paper_strategist` (an MCP tool, alongside `get_simulation_status` /
-`set_simulation_enabled`) runs the exact same decision pipeline as
-`run_strategist` — real analysis results, real LLM call via
-`strategist/internal/llm`, real `risk-engine` validation — but fills
-approved trades against `execution/paperstore`'s simulated cash/positions
-ledger instead of the Binance testnet. This is how decision *accuracy* is
-validated (does the real pipeline actually pick good trades?) before
-trusting `run_strategist` with a real/testnet account: same brain, fake
-money.
+`execution/cmd/agent-loop` is the active host loop. It runs every 15 minutes
+by default (immediately on startup), reads `paper_state` controls, and launches
+the selected subscribed CLI: `claude_code` (`claude -p`) or `codex` (`codex
+exec`). Configure the `investment-platform` stdio MCP server in **both** CLIs;
+the loop only selects which already-configured client runs. It does not make
+direct provider API calls or contain provider API keys.
 
-- `execution/paperexec.Client` implements `execution/executor.Client`
-  (pattern 3 above — public-package reuse, no `internal/` involved) and is
-  passed into `strategist/runner.RunWithExecutor` (a `RunWithDSN` variant
-  that takes the executor as a parameter instead of always constructing
-  the real Binance one).
-- `execution/paperstore` (public) owns `paper_state` (singleton
-  cash/positions/enabled row), `paper_fills`, and `paper_decision_ids`.
-  `mcp`, `web-api`, and `execution/paperexec` all import it directly —
-  three separate `pgxpool.Pool`s on the same DSN, same pattern as
-  `risk-engine/storage` being imported by everyone.
-- `run_paper_strategist` refuses to run when `paper_state.enabled` is
-  false — flip it with `set_simulation_enabled` (also exposed as a toggle
-  switch on the frontend's "Ao Vivo" tab) so no LLM call is spent on a
-  cycle nobody asked for.
-- **There is no background scheduler anywhere in this repo** — automation
-  for both real and paper trading is agent-orchestrated: something with an
-  MCP client (a Claude Code session, a Codex run) decides when to call
-  `run_analysis` → `run_strategist`/`run_paper_strategist`. "Ao Vivo" being
-  "fully automatic" means whatever loop already drives real trading also
-  drives the paper cycle while simulation is enabled — it does not mean a
-  new Go cron loop.
-- `web-api/internal/storage.RecentDecisions` excludes any row whose id is
-  in `paper_decision_ids` (pattern 2 — direct SQL read of another module's
-  table) so a paper cycle never shows up in the real Decisions dashboard;
-  `RecentPaperDecisions` is the inverse, for the "Ao Vivo" tab's history.
+- `paper_state` owns the singleton paper ledger plus `enabled` (paper),
+  `testnet_enabled`, and `active_agent`. The frontend "Ao Vivo" controls and
+  `get_automation_controls` / `set_automation_controls` MCP tools update or
+  read these controls. Both execution gates default to off.
+- A cycle exits without invoking an agent when both gates are off. Otherwise
+  the fixed prompt uses only the staged MCP tools: `prepare_analysis`, five
+  ordered `submit_analysis_narratives` stages (technical, derivatives, news,
+  risk_context, macro), `submit_committee_assessments`, `prepare_strategy`,
+  and `apply_strategy_intents`. Targets are explicitly limited to the enabled
+  `paper` and/or `testnet` gates; the agent never changes controls.
+- The same external-agent analysis and strategy intents are applied to both
+  targets when both are enabled. Paper uses `execution/paperexec` and its
+  simulated ledger; testnet uses the Binance Futures testnet executor. This is
+  a single strategy, not separate paper and testnet strategies.
+- The user-level systemd unit is `ops/invest-agent-loop.service`; credentials
+  and CLI paths are inherited from `~/.config/invest-agent-loop.env`. See
+  `docs/mcp-automation-ops.md` for setup and smoke testing.
+- `web-api/internal/storage.RecentDecisions` excludes IDs in
+  `paper_decision_ids`; `RecentPaperDecisions` is the inverse, keeping paper
+  activity out of the testnet Decisions dashboard.
 
 ## Known deferred technical debt
 
@@ -196,14 +188,19 @@ with its own review; otherwise leave it as-is and mention it in your
 report if it's relevant to what you touched.
 
 - **No Binance `LOT_SIZE`/step-size quantity rounding** (`execution`
-  module) — real orders will likely be rejected by Binance until an
+  module) — testnet orders will likely be rejected by Binance until an
   `exchangeInfo` fetch + floor-to-step is added.
 - **Non-deterministic execution idempotency** — the decision ID used as
   Binance's `newClientOrderId` is a fresh UUID per run, not derived from
-  `analysis_run_id`+`asset`, so a duplicate `run_strategist` call can
-  place a duplicate real order. Fixing this correctly needs an
+  `analysis_run_id`+`asset`, so a duplicate run can place a duplicate testnet
+  order. Fixing this correctly needs an
   upsert-semantics change to `strategist`'s `SaveDecision`, not a quick
   patch.
+- **Testnet only** — no real-money Binance endpoint or real-trading target is
+  supported by this automation.
+- **Paper consecutive losses are unavailable** — `paper_fills` does not store
+  cost basis, so realized winning and losing fills cannot be calculated
+  honestly; the paper risk input remains zero for this metric.
 - **One unpriceable held position fails the entire strategist run**
   (`strategist/runner.buildPortfolio`) — a stray position in a symbol
   `market-data` doesn't track aborts the whole run rather than being

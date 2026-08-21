@@ -48,7 +48,7 @@ func run() error {
 	handler := api.NewServer(store, dsn, riskStore, paperStore, frontendDir)
 	addr := os.Getenv("WEB_API_ADDR")
 	if addr == "" {
-		addr = ":8080"
+		addr = "127.0.0.1:8080"
 	}
 	log.Printf("web-api listening on %s (frontend dir: %q)", addr, frontendDir)
 	return http.ListenAndServe(addr, handler)

@@ -1,0 +1,17 @@
+[Unit]
+Description=Investment MCP agent loop
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/documents/farmdinheiro/invest/execution
+# Keep credentials in this 0600 file; child agent/MCP processes inherit them.
+EnvironmentFile=%h/.config/invest-agent-loop.env
+UMask=0077
+ExecStart=%h/documents/farmdinheiro/invest/execution/agent-loop
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target

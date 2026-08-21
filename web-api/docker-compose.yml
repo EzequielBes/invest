@@ -3,11 +3,11 @@ services:
     image: golang:1.22
     working_dir: /app
     volumes:
-      - .:/app
-      - ../frontend/dist:/frontend-dist
-      - ../risk-engine:/risk-engine
-      - ../simulation:/simulation
-      - ../execution:/execution
+      - .:/app:z
+      - ../frontend/dist:/frontend-dist:z
+      - ../risk-engine:/risk-engine:z
+      - ../simulation:/simulation:z
+      - ../execution:/execution:z
       - go-mod-cache:/go/pkg/mod
     environment:
       DATABASE_URL: postgres://marketdata:marketdata@timescaledb:5432/marketdata?sslmode=disable
@@ -19,7 +19,7 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     networks:
       - market-data_default
     command: ["go", "run", "./cmd/web-api"]

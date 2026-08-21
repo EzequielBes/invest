@@ -183,6 +183,29 @@ export interface SimulationStatus {
   fills: PaperFill[];
 }
 
+export interface AutomationControls {
+  paper_enabled: boolean;
+  testnet_enabled: boolean;
+  active_agent: 'claude_code' | 'codex';
+}
+
+export interface AutomationControlsPatch {
+  paper_enabled?: boolean;
+  testnet_enabled?: boolean;
+  active_agent?: AutomationControls['active_agent'];
+}
+
+export interface IntentOutcome {
+  analysis_run_id: string;
+  intent_id: string;
+  asset: string;
+  side: string;
+  horizon_hours: number;
+  direction_return_pct: number;
+  correct: boolean;
+  created_at: string;
+}
+
 export interface TriggerBacktestRequest {
   period_start: string;
   period_end: string;
@@ -230,6 +253,19 @@ async function postJSON<TReq, TRes>(path: string, payload: TReq): Promise<TRes> 
   return response.json() as Promise<TRes>;
 }
 
+async function patchJSON<TReq, TRes>(path: string, payload: TReq): Promise<TRes> {
+  const response = await fetch(path, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const body: { error?: string } = await response.json().catch(() => ({}));
+    throw new Error(body.error ?? `request failed: ${response.status}`);
+  }
+  return response.json() as Promise<TRes>;
+}
+
 export const api = {
   decisions: () => getJSON<Decision[]>('/api/decisions'),
   riskState: () => getJSON<RiskStateResponse>('/api/risk-state'),
@@ -244,6 +280,9 @@ export const api = {
   news: () => getJSON<NewsItem[]>('/api/news'),
   configStatus: () => getJSON<ConfigStatus>('/api/config-status'),
   paperDecisions: () => getJSON<Decision[]>('/api/paper-decisions'),
+	intentOutcomes: () => getJSON<IntentOutcome[]>('/api/intent-outcomes'),
   simulationStatus: () => getJSON<SimulationStatus>('/api/simulation/status'),
   toggleSimulation: (enabled: boolean) => postJSON<{ enabled: boolean }, SimulationStatus>('/api/simulation/toggle', { enabled }),
+  automationControls: () => getJSON<AutomationControls>('/api/automation-controls'),
+  patchAutomationControls: (patch: AutomationControlsPatch) => patchJSON<AutomationControlsPatch, AutomationControls>('/api/automation-controls', patch),
 };

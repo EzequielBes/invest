@@ -3,19 +3,16 @@ services:
     image: golang:1.23
     working_dir: /app
     volumes:
-      - .:/app
-      - ../risk-engine:/risk-engine
-      - ../analysis:/analysis
-      - ../strategist:/strategist
-      - ../simulation:/simulation
-      - ../execution:/execution
+      - .:/app:z
+      - ../risk-engine:/risk-engine:z
+      - ../analysis:/analysis:z
+      - ../strategist:/strategist:z
+      - ../simulation:/simulation:z
+      - ../execution:/execution:z
       - go-mod-cache:/go/pkg/mod
     environment:
       DATABASE_URL: postgres://marketdata:marketdata@timescaledb:5432/marketdata?sslmode=disable
       TEST_DATABASE_URL: postgres://marketdata:marketdata@timescaledb:5432/marketdata?sslmode=disable
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      LLM_PRIMARY_PROVIDER: ${LLM_PRIMARY_PROVIDER:-}
       BINANCE_API_KEY: ${BINANCE_API_KEY:-}
       BINANCE_API_SECRET: ${BINANCE_API_SECRET:-}
     networks:

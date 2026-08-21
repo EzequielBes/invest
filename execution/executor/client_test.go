@@ -11,10 +11,13 @@ import (
 
 	"execution/internal/binanceclient"
 	"execution/internal/storage"
+	"execution/paperstore"
 )
 
 type fakeBinance struct {
 	placeOrder  binanceclient.Order
+	placeCalls  int
+	placeHook   func()
 	statusSeq   []binanceclient.Order
 	statusIdx   int
 	cancelOrder binanceclient.Order
@@ -37,6 +40,10 @@ func (f *fakeBinance) GetAccount(context.Context) (binanceclient.Account, error)
 }
 
 func (f *fakeBinance) PlaceLimitOrder(context.Context, string, string, float64, float64, string) (binanceclient.Order, error) {
+	f.placeCalls++
+	if f.placeHook != nil {
+		f.placeHook()
+	}
 	return f.placeOrder, nil
 }
 
@@ -73,13 +80,38 @@ func (f *fakeStore) SaveExecution(_ context.Context, e storage.Execution) error 
 
 func (f *fakeStore) Close() {}
 
+type fakeControls struct {
+	err        error
+	calls      int
+	inCallback bool
+}
+
+func (f *fakeControls) Close() {}
+
+func (f *fakeControls) WithTestnetEnabled(_ context.Context, fn func() error) error {
+	f.calls++
+	if f.err != nil {
+		return f.err
+	}
+	f.inCallback = true
+	defer func() { f.inCallback = false }()
+	return fn()
+}
+
+func testExecutor(binance *fakeBinance, store *fakeStore) *BinanceExecutor {
+	return &BinanceExecutor{
+		binance: binance, store: store, controls: &fakeControls{},
+		pollInterval: time.Millisecond, fillTimeout: 20 * time.Millisecond,
+	}
+}
+
 func TestExecute_FilledOnFirstPollNeverCancels(t *testing.T) {
 	binance := &fakeBinance{
 		placeOrder: binanceclient.Order{Status: "NEW"},
 		statusSeq:  []binanceclient.Order{{OrderID: 1, ClientOrderID: "cid", Status: "FILLED", ExecutedQty: 1.0, AvgPrice: 100}},
 	}
 	store := &fakeStore{}
-	e := &BinanceExecutor{binance: binance, store: store, pollInterval: time.Millisecond, fillTimeout: 20 * time.Millisecond}
+	e := testExecutor(binance, store)
 
 	outcome, err := e.Execute(context.Background(), "BTC", risk.SideBuy, 1.0, 100, "cid")
 	if err != nil {
@@ -102,7 +134,8 @@ func TestExecute_TimeoutWithNoFillCancels(t *testing.T) {
 		statusSeq:   []binanceclient.Order{{Status: "NEW"}},
 		cancelOrder: binanceclient.Order{OrderID: 2, ClientOrderID: "cid", Status: "CANCELED", ExecutedQty: 0},
 	}
-	e := &BinanceExecutor{binance: binance, store: &fakeStore{}, pollInterval: time.Millisecond, fillTimeout: 3 * time.Millisecond}
+	e := testExecutor(binance, &fakeStore{})
+	e.fillTimeout = 3 * time.Millisecond
 
 	outcome, err := e.Execute(context.Background(), "BTC", risk.SideBuy, 1.0, 100, "cid")
 	if err != nil {
@@ -122,7 +155,8 @@ func TestExecute_TimeoutWithPartialFillReportsPartial(t *testing.T) {
 		statusSeq:   []binanceclient.Order{{Status: "PARTIALLY_FILLED", ExecutedQty: 0.3}},
 		cancelOrder: binanceclient.Order{OrderID: 3, ClientOrderID: "cid", Status: "CANCELED", ExecutedQty: 0.3, AvgPrice: 100},
 	}
-	e := &BinanceExecutor{binance: binance, store: &fakeStore{}, pollInterval: time.Millisecond, fillTimeout: 3 * time.Millisecond}
+	e := testExecutor(binance, &fakeStore{})
+	e.fillTimeout = 3 * time.Millisecond
 
 	outcome, err := e.Execute(context.Background(), "BTC", risk.SideBuy, 1.0, 100, "cid")
 	if err != nil {
@@ -146,7 +180,8 @@ func TestExecute_CancelFailsButRecheckShowsFillPersistsFill(t *testing.T) {
 		postCancelOrder: binanceclient.Order{OrderID: 4, ClientOrderID: "cid", Status: "FILLED", ExecutedQty: 1.0, AvgPrice: 100},
 	}
 	store := &fakeStore{}
-	e := &BinanceExecutor{binance: binance, store: store, pollInterval: time.Millisecond, fillTimeout: 3 * time.Millisecond}
+	e := testExecutor(binance, store)
+	e.fillTimeout = 3 * time.Millisecond
 
 	outcome, err := e.Execute(context.Background(), "BTC", risk.SideBuy, 1.0, 100, "cid")
 	if err != nil {
@@ -174,7 +209,8 @@ func TestExecute_CancelFailsAndOrderStillOpenReturnsError(t *testing.T) {
 		postCancelOrder: binanceclient.Order{OrderID: 5, ClientOrderID: "cid", Status: "PARTIALLY_FILLED", ExecutedQty: 0.4, AvgPrice: 100},
 	}
 	store := &fakeStore{}
-	e := &BinanceExecutor{binance: binance, store: store, pollInterval: time.Millisecond, fillTimeout: 3 * time.Millisecond}
+	e := testExecutor(binance, store)
+	e.fillTimeout = 3 * time.Millisecond
 
 	_, err := e.Execute(context.Background(), "BTC", risk.SideBuy, 1.0, 100, "cid")
 	if err == nil {
@@ -192,12 +228,13 @@ func TestExecute_CancelFailsAndOrderStillOpenReturnsError(t *testing.T) {
 // through into the same cancel-and-classify logic a fill-timeout gets.
 func TestExecute_PollFailureStillAttemptsCancel(t *testing.T) {
 	binance := &fakeBinance{
-		placeOrder: binanceclient.Order{Status: "NEW"},
-		pollErr:    errors.New("binance: connection reset"),
+		placeOrder:  binanceclient.Order{Status: "NEW"},
+		pollErr:     errors.New("binance: connection reset"),
 		cancelOrder: binanceclient.Order{OrderID: 6, ClientOrderID: "cid", Status: "CANCELED", ExecutedQty: 0},
 	}
 	store := &fakeStore{}
-	e := &BinanceExecutor{binance: binance, store: store, pollInterval: time.Millisecond, fillTimeout: 5 * time.Millisecond}
+	e := testExecutor(binance, store)
+	e.fillTimeout = 5 * time.Millisecond
 
 	outcome, err := e.Execute(context.Background(), "BTC", risk.SideBuy, 1.0, 100, "cid")
 	if err != nil {
@@ -211,5 +248,44 @@ func TestExecute_PollFailureStillAttemptsCancel(t *testing.T) {
 	}
 	if len(store.saved) != 1 || store.saved[0].Status != "cancelled" {
 		t.Errorf("saved = %+v, want one cancelled execution persisted", store.saved)
+	}
+}
+
+func TestExecute_TestnetDisabledDoesNotPlaceOrder(t *testing.T) {
+	binance := &fakeBinance{}
+	controls := &fakeControls{err: paperstore.ErrTestnetDisabled}
+	e := testExecutor(binance, &fakeStore{})
+	e.controls = controls
+
+	_, err := e.Execute(context.Background(), "BTC", risk.SideBuy, 1, 100, "cid")
+	if !errors.Is(err, paperstore.ErrTestnetDisabled) {
+		t.Fatalf("Execute error = %v, want ErrTestnetDisabled", err)
+	}
+	if controls.calls != 1 {
+		t.Errorf("WithTestnetEnabled calls = %d, want 1", controls.calls)
+	}
+	if binance.placeCalls != 0 {
+		t.Errorf("PlaceLimitOrder calls = %d, want 0", binance.placeCalls)
+	}
+}
+
+func TestExecute_PlacesOrderInsideTestnetAuthorization(t *testing.T) {
+	controls := &fakeControls{}
+	binance := &fakeBinance{
+		placeOrder: binanceclient.Order{OrderID: 1, ClientOrderID: "cid", Status: "FILLED", ExecutedQty: 1, AvgPrice: 100},
+		placeHook: func() {
+			if !controls.inCallback {
+				t.Error("PlaceLimitOrder called outside WithTestnetEnabled")
+			}
+		},
+	}
+	e := testExecutor(binance, &fakeStore{})
+	e.controls = controls
+
+	if _, err := e.Execute(context.Background(), "BTC", risk.SideBuy, 1, 100, "cid"); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if controls.calls != 1 || binance.placeCalls != 1 {
+		t.Errorf("authorization/order calls = %d/%d, want 1/1", controls.calls, binance.placeCalls)
 	}
 }

@@ -1,24 +1,24 @@
 import { useState } from 'react';
-import { api, type Decision, type SimulationStatus } from '../api/client';
+import { api, type AutomationControls, type AutomationControlsPatch, type Decision, type SimulationStatus } from '../api/client';
 import DecisionLedger from '../components/DecisionLedger';
 import { usePolling } from '../hooks/usePolling';
 
 export default function PaperTradingPage() {
   const { data: status, error: statusError } = usePolling<SimulationStatus>(api.simulationStatus);
+  const { data: controls, error: controlsError } = usePolling<AutomationControls>(api.automationControls);
   const { data: decisions, error: decisionsError } = usePolling<Decision[]>(api.paperDecisions);
-  const [toggling, setToggling] = useState(false);
+  const [updatingControls, setUpdatingControls] = useState(false);
   const [toggleError, setToggleError] = useState<string | null>(null);
 
-  async function handleToggle() {
-    if (!status) return;
-    setToggling(true);
+  async function handleControlsPatch(patch: AutomationControlsPatch) {
+    setUpdatingControls(true);
     setToggleError(null);
     try {
-      await api.toggleSimulation(!status.enabled);
+      await api.patchAutomationControls(patch);
     } catch (err) {
       setToggleError(err instanceof Error ? err.message : String(err));
     } finally {
-      setToggling(false);
+      setUpdatingControls(false);
     }
   }
 
@@ -28,8 +28,8 @@ export default function PaperTradingPage() {
     <div>
       <p style={{ maxWidth: 640, color: 'var(--paper-dim)', marginTop: 0 }}>
         Roda o pipeline real de decisao (analise, LLM do strategist, validacao do risk-engine) sem
-        investir dinheiro real nem tocar na conta da testnet — cada ciclo e disparado via MCP
-        (Claude ou Codex). Aqui fica o interruptor e o historico, pra acompanhar o quao precisas as
+        investir dinheiro real. Os interruptores controlam os ciclos de papel e testnet, disparados por um
+        agente externo (Claude ou Codex). Aqui fica o estado e o historico, pra acompanhar o quao precisas as
         decisoes reais teriam sido antes de confiar dinheiro de verdade a elas.
       </p>
 
@@ -38,13 +38,32 @@ export default function PaperTradingPage() {
         {!status && !statusError && <p aria-live="polite">Carregando...</p>}
         {status && (
           <>
-            <span className={`plaque-status tone-${status.enabled ? 'sage' : 'rust'}`}>
-              {status.enabled ? 'simulacao ativa' : 'simulacao desativada'}
+            <span className={`plaque-status tone-${controls?.paper_enabled ? 'sage' : 'rust'}`}>
+              {controls?.paper_enabled ? 'papel ativo' : 'papel desativado'}
             </span>
-            <div style={{ marginTop: 18 }}>
-              <button className="btn-primary" disabled={toggling} onClick={() => void handleToggle()} type="button">
-                {toggling ? 'Aplicando...' : status.enabled ? 'Desativar simulacao' : 'Ativar simulacao'}
-              </button>
+            {controlsError && <p className="error" role="alert" style={{ marginTop: 12 }}>{controlsError}</p>}
+            {controls && (
+              <div className="form-grid" style={{ marginTop: 20 }}>
+                <label className="field control-toggle">
+                  <span>automacao em papel</span>
+                  <input checked={controls.paper_enabled} disabled={updatingControls} onChange={(event) => void handleControlsPatch({ paper_enabled: event.target.checked })} type="checkbox" />
+                </label>
+                <label className="field control-toggle">
+                  <span>automacao na testnet</span>
+                  <input checked={controls.testnet_enabled} disabled={updatingControls} onChange={(event) => void handleControlsPatch({ testnet_enabled: event.target.checked })} type="checkbox" />
+                </label>
+                <label className="field" htmlFor="active-agent">
+                  <span>agente ativo</span>
+                  <select disabled={updatingControls} id="active-agent" onChange={(event) => void handleControlsPatch({ active_agent: event.target.value as AutomationControls['active_agent'] })} value={controls.active_agent}>
+                    <option value="claude_code">Claude Code</option>
+                    <option value="codex">Codex</option>
+                  </select>
+                </label>
+              </div>
+            )}
+            {!controls && !controlsError && <p aria-live="polite" style={{ marginTop: 12 }}>Carregando controles...</p>}
+            <div aria-live="polite" style={{ marginTop: 12 }}>
+              {updatingControls && 'Aplicando controles...'}
             </div>
             {toggleError && <p className="error" role="alert" style={{ marginTop: 12 }}>{toggleError}</p>}
             <div className="stat-row" style={{ marginTop: 20 }}>

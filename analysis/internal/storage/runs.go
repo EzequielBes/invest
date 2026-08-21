@@ -16,7 +16,7 @@ type Run struct {
 func (s *Store) CreateRun(ctx context.Context, r Run) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO analysis_runs (id, started_at, timeframe, status)
-		VALUES ($1, $2, $3, 'running')
+		VALUES ($1, $2, $3, 'pending')
 	`, r.ID, r.StartedAt, r.Timeframe)
 	return err
 }
@@ -35,6 +35,26 @@ func (s *Store) FinishRun(ctx context.Context, runID string, runErr error) error
 		UPDATE analysis_runs SET status = $1, error = $2, finished_at = now() WHERE id = $3
 	`, status, errMsg, runID)
 	return err
+}
+
+// FailPendingBefore marks pending runs started before cutoff as failed.
+func (s *Store) FailPendingBefore(ctx context.Context, cutoff time.Time, message string) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE analysis_runs
+		SET status = 'failed', error = $1, finished_at = now()
+		WHERE status = 'pending' AND started_at < $2
+	`, message, cutoff)
+	return tag.RowsAffected(), err
+}
+
+// PendingRun verifies that a run is ready for staged submissions.
+func (s *Store) PendingRun(ctx context.Context, runID string) (bool, error) {
+	var status string
+	err := s.pool.QueryRow(ctx, `SELECT status FROM analysis_runs WHERE id = $1`, runID).Scan(&status)
+	if err != nil {
+		return false, err
+	}
+	return status == "pending", nil
 }
 
 type Result struct {
@@ -57,6 +77,10 @@ func (s *Store) SaveResult(ctx context.Context, r Result) error {
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO analysis_results (id, run_id, agent_type, asset, indicators, narrative, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (run_id, agent_type, asset) DO UPDATE SET
+			indicators = EXCLUDED.indicators,
+			narrative = EXCLUDED.narrative,
+			created_at = EXCLUDED.created_at
 	`, r.ID, r.RunID, r.AgentType, r.Asset, indicatorsJSON, r.Narrative, r.CreatedAt)
 	return err
 }
@@ -64,6 +88,7 @@ func (s *Store) SaveResult(ctx context.Context, r Result) error {
 // DeleteRunForTest removes a run and its results — test-only cleanup, not
 // used by production code.
 func (s *Store) DeleteRunForTest(ctx context.Context, runID string) {
+	s.pool.Exec(ctx, `DELETE FROM analysis_rankings WHERE run_id = $1`, runID)
 	s.pool.Exec(ctx, `DELETE FROM analysis_results WHERE run_id = $1`, runID)
 	s.pool.Exec(ctx, `DELETE FROM analysis_runs WHERE id = $1`, runID)
 }
@@ -73,6 +98,16 @@ func (s *Store) RunStatus(ctx context.Context, runID string) (string, error) {
 	var status string
 	err := s.pool.QueryRow(ctx, `SELECT status FROM analysis_runs WHERE id = $1`, runID).Scan(&status)
 	return status, err
+}
+
+// RunErrorForTest reads a run's error message — used by tests.
+func (s *Store) RunErrorForTest(ctx context.Context, runID string) (string, error) {
+	var message *string
+	err := s.pool.QueryRow(ctx, `SELECT error FROM analysis_runs WHERE id = $1`, runID).Scan(&message)
+	if message == nil {
+		return "", err
+	}
+	return *message, err
 }
 
 // ResultCount counts analysis_results rows for runID — used by tests.

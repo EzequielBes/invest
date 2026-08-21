@@ -1,12 +1,11 @@
-// analysis/runner/runner.go
+// Package runner exposes analysis's staged, provider-neutral workflow.
 package runner
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,161 +13,383 @@ import (
 	riskstorage "risk-engine/storage"
 
 	"analysis/internal/agents"
-	"analysis/internal/llm"
 	"analysis/internal/ranking"
 	"analysis/internal/storage"
 )
 
-// Run executes one analysis run against the given assets/timeframe/agent
-// selection, using client for narration. assetNames maps a symbol to its
-// full name for the news agent (e.g. "BTC" -> "Bitcoin"); nil or a missing
-// entry falls back to the symbol itself. Exported so both cmd/analysis and
-// other modules (the MCP server) can call it directly.
-func Run(ctx context.Context, store *storage.Store, riskStore *riskstorage.Store, client llm.Client, assets []string, assetNames map[string]string, timeframe string, requestedAgents []string) (runID string, successCount int, err error) {
-	runID = uuid.NewString()
-	if err := store.CreateRun(ctx, storage.Run{ID: runID, StartedAt: time.Now().UTC(), Timeframe: timeframe}); err != nil {
-		return runID, 0, fmt.Errorf("create run: %w", err)
-	}
-	recordOne := func(agentType, asset string, out agents.Output, agentErr error) error {
-		succeeded, err := record(ctx, store, runID, agentType, asset, out, agentErr)
-		if succeeded {
-			successCount++
-		}
-		return err
-	}
-	requested := make(map[string]bool, len(requestedAgents))
-	for _, agentType := range requestedAgents {
-		requested[agentType] = true
-	}
-	// Fixed stages make macro/committee independent of caller ordering and
-	// guarantee committee is the final LLM role in every cycle.
-	if requested["technical"] {
-		for _, asset := range assets {
-			out, agentErr := agents.Technical(ctx, store, client, asset, timeframe)
-			if err := recordOne("technical", asset, out, agentErr); err != nil {
-				return abortRun(ctx, store, runID, successCount, err)
-			}
-		}
-	}
-	if requested["derivatives"] {
-		for _, asset := range assets {
-			out, agentErr := agents.Derivatives(ctx, store, client, asset)
-			if err := recordOne("derivatives", asset, out, agentErr); err != nil {
-				return abortRun(ctx, store, runID, successCount, err)
-			}
-		}
-	}
-	if requested["news"] {
-		for _, asset := range assets {
-			name := assetNames[asset]
-			if name == "" {
-				name = asset
-			}
-			out, agentErr := agents.News(ctx, store, client, asset, name)
-			if err := recordOne("news", asset, out, agentErr); err != nil {
-				return abortRun(ctx, store, runID, successCount, err)
-			}
-		}
-	}
-	if requested["risk_context"] {
-		out, agentErr := agents.RiskContext(ctx, riskStore, client)
-		if err := recordOne("risk_context", "", out, agentErr); err != nil {
-			return abortRun(ctx, store, runID, successCount, err)
-		}
-	}
-	if requested["macro"] {
-		sources, sourceErr := cycleNarratives(ctx, store, runID)
-		if sourceErr != nil {
-			return abortRun(ctx, store, runID, successCount, sourceErr)
-		}
-		out, agentErr := agents.Macro(ctx, client, assets, sources)
-		if err := recordOne("macro", "", out, agentErr); err != nil {
-			return abortRun(ctx, store, runID, successCount, err)
-		}
-	}
-	if requested["committee"] {
-		if err := runCommittee(ctx, store, riskStore, client, runID, assets, recordOne, &successCount); err != nil {
-			return abortRun(ctx, store, runID, successCount, err)
-		}
-	}
-	if successCount == 0 {
-		return abortRun(ctx, store, runID, successCount, fmt.Errorf("all agents failed"))
-	}
-	if finishErr := store.FinishRun(ctx, runID, nil); finishErr != nil {
-		return abortRun(ctx, store, runID, successCount, fmt.Errorf("finish run: %w", finishErr))
-	}
-	return runID, successCount, nil
+type PrepareRequest struct {
+	Assets     []string
+	AssetNames map[string]string
+	Timeframe  string
 }
 
-func cycleNarratives(ctx context.Context, store *storage.Store, runID string) ([]agents.CycleNarrative, error) {
+// ContextItem is deterministic source material for a subscription client.
+type ContextItem struct {
+	AgentType  string
+	Asset      string
+	Indicators json.RawMessage
+}
+
+type PreparedRun struct {
+	RunID      string
+	Context    []ContextItem
+	Exclusions []risk.EligibilityResult
+}
+
+type NarrativeSubmission struct {
+	Asset     string
+	Narrative string
+}
+
+type Evidence = agents.Evidence
+type CommitteeAssessment = agents.CommitteeAssessment
+
+const stalePendingTimeout = 20 * time.Minute
+
+const stalePendingError = "analysis run timed out waiting for staged submissions"
+
+// CleanupStalePendingWithDSN fails pending runs left unfinished for 20 minutes.
+func CleanupStalePendingWithDSN(ctx context.Context, dsn string) error {
+	store, err := storage.New(ctx, dsn)
+	if err != nil {
+		return fmt.Errorf("connect analysis storage: %w", err)
+	}
+	defer store.Close()
+	if _, err := store.FailPendingBefore(ctx, time.Now().UTC().Add(-stalePendingTimeout), stalePendingError); err != nil {
+		return fmt.Errorf("fail stale pending analysis runs: %w", err)
+	}
+	return nil
+}
+
+// PrepareWithDSN collects and persists deterministic context in a pending run.
+func PrepareWithDSN(ctx context.Context, dsn string, riskStore *riskstorage.Store, request PrepareRequest) (PreparedRun, error) {
+	assets, err := validateRequest(request)
+	if err != nil {
+		return PreparedRun{}, err
+	}
+	if riskStore == nil {
+		return PreparedRun{}, fmt.Errorf("risk store is required")
+	}
+	store, err := storage.New(ctx, dsn)
+	if err != nil {
+		return PreparedRun{}, fmt.Errorf("connect analysis storage: %w", err)
+	}
+	defer store.Close()
+	assets, exclusions, err := eligibleAssets(ctx, riskStore, assets)
+	if err != nil {
+		return PreparedRun{}, err
+	}
+	if len(assets) == 0 {
+		return PreparedRun{Exclusions: exclusions}, nil
+	}
+
+	runID := uuid.NewString()
+	if err := store.CreateRun(ctx, storage.Run{ID: runID, StartedAt: time.Now().UTC(), Timeframe: request.Timeframe}); err != nil {
+		return PreparedRun{}, fmt.Errorf("create pending run: %w", err)
+	}
+	if err := prepare(ctx, store, riskStore, runID, assets, request.AssetNames, request.Timeframe); err != nil {
+		_ = store.FinishRun(context.WithoutCancel(ctx), runID, err)
+		return PreparedRun{RunID: runID}, fmt.Errorf("prepare analysis context: %w", err)
+	}
+	preparedRun, err := prepared(ctx, store, runID)
+	preparedRun.Exclusions = exclusions
+	return preparedRun, err
+}
+
+func eligibleAssets(ctx context.Context, riskStore *riskstorage.Store, assets []string) ([]string, []risk.EligibilityResult, error) {
+	eligible := make([]string, 0, len(assets))
+	exclusions := make([]risk.EligibilityResult, 0)
+	for _, asset := range assets {
+		metrics, err := riskStore.EligibilityMetrics(ctx, asset)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read eligibility metrics for %s: %w", asset, err)
+		}
+		result := risk.AssessEligibility(asset, metrics, time.Now().UTC())
+		if result.Eligible {
+			eligible = append(eligible, asset)
+		} else {
+			exclusions = append(exclusions, result)
+		}
+	}
+	return eligible, exclusions, nil
+}
+
+// GetContextWithDSN retrieves deterministic context for a pending analysis run.
+func GetContextWithDSN(ctx context.Context, dsn, runID string) (PreparedRun, error) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return PreparedRun{}, fmt.Errorf("analysis run ID is required")
+	}
+	store, err := storage.New(ctx, dsn)
+	if err != nil {
+		return PreparedRun{}, fmt.Errorf("connect analysis storage: %w", err)
+	}
+	defer store.Close()
+	if pending, err := store.PendingRun(ctx, runID); err != nil {
+		return PreparedRun{}, fmt.Errorf("read analysis run: %w", err)
+	} else if !pending {
+		return PreparedRun{}, fmt.Errorf("analysis run %s is not pending", runID)
+	}
+	return prepared(ctx, store, runID)
+}
+
+func prepare(ctx context.Context, store *storage.Store, riskStore *riskstorage.Store, runID string, assets []string, names map[string]string, timeframe string) error {
+	for _, asset := range assets {
+		output, err := agents.Technical(ctx, store, asset, timeframe)
+		if err != nil {
+			return err
+		}
+		if err := saveOutput(ctx, store, runID, "technical", asset, output); err != nil {
+			return err
+		}
+		output, err = agents.Derivatives(ctx, store, asset)
+		if err != nil {
+			return err
+		}
+		if err := saveOutput(ctx, store, runID, "derivatives", asset, output); err != nil {
+			return err
+		}
+		name := names[asset]
+		if name == "" {
+			name = asset
+		}
+		output, err = agents.News(ctx, store, asset, name)
+		if err != nil {
+			return err
+		}
+		if err := saveOutput(ctx, store, runID, "news", asset, output); err != nil {
+			return err
+		}
+	}
+	output, err := agents.RiskContext(ctx, riskStore)
+	if err != nil {
+		return err
+	}
+	return saveOutput(ctx, store, runID, "risk_context", "", output)
+}
+
+// SubmitNarrativesWithDSN stores one validated narrative stage. Retrying the
+// same stage is safe and replaces only that stage's narrative.
+func SubmitNarrativesWithDSN(ctx context.Context, dsn, runID, stage string, submissions []NarrativeSubmission) error {
+	store, err := storage.New(ctx, dsn)
+	if err != nil {
+		return fmt.Errorf("connect analysis storage: %w", err)
+	}
+	defer store.Close()
+	if pending, err := store.PendingRun(ctx, runID); err != nil {
+		return fmt.Errorf("read analysis run: %w", err)
+	} else if !pending {
+		return fmt.Errorf("analysis run %s is not pending", runID)
+	}
 	results, err := store.ResultsForRun(ctx, runID)
 	if err != nil {
-		return nil, fmt.Errorf("read cycle narratives: %w", err)
+		return fmt.Errorf("read analysis context: %w", err)
 	}
+	if err := validateNarratives(stage, submissions, results); err != nil {
+		return err
+	}
+	for _, submission := range submissions {
+		indicators := indicatorsFor(results, stage, submission.Asset)
+		if stage == "macro" {
+			indicators, _ = json.Marshal(agents.MacroIndicators{AssetsAnalyzed: assetCount(results), SourceCount: len(results)})
+		}
+		if err := store.SaveResult(ctx, storage.Result{ID: uuid.NewString(), RunID: runID, AgentType: stage, Asset: submission.Asset, Indicators: indicators, Narrative: strings.TrimSpace(submission.Narrative), CreatedAt: time.Now().UTC()}); err != nil {
+			return fmt.Errorf("save %s narrative: %w", stage, err)
+		}
+	}
+	return nil
+}
+
+// CompleteWithCommitteeWithDSN validates structured committee output,
+// persists it, computes deterministic rankings, and completes the run.
+func CompleteWithCommitteeWithDSN(ctx context.Context, dsn string, riskStore *riskstorage.Store, runID string, assessments []CommitteeAssessment) error {
+	if riskStore == nil {
+		return fmt.Errorf("risk store is required")
+	}
+	store, err := storage.New(ctx, dsn)
+	if err != nil {
+		return fmt.Errorf("connect analysis storage: %w", err)
+	}
+	defer store.Close()
+	if pending, err := store.PendingRun(ctx, runID); err != nil {
+		return fmt.Errorf("read analysis run: %w", err)
+	} else if !pending {
+		return fmt.Errorf("analysis run %s is not pending", runID)
+	}
+	results, err := store.ResultsForRun(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("read analysis context: %w", err)
+	}
+	if !hasNarrative(results, "macro", "") {
+		return fmt.Errorf("macro narrative must be submitted before committee")
+	}
+	assets := assetsFromResults(results)
+	sources := narratives(results)
+	expected := agents.EligibleAssets(assets, sources)
+	raw, _ := json.Marshal(struct {
+		Assessments []CommitteeAssessment `json:"assessments"`
+	}{assessments})
+	validated, err := agents.ParseCommitteeResponse(string(raw), expected)
+	if err != nil {
+		return err
+	}
+	if err := saveCommittee(ctx, store, riskStore, runID, validated); err != nil {
+		return err
+	}
+	if err := store.FinishRun(ctx, runID, nil); err != nil {
+		return fmt.Errorf("complete analysis run: %w", err)
+	}
+	return nil
+}
+
+func prepared(ctx context.Context, store *storage.Store, runID string) (PreparedRun, error) {
+	results, err := store.ResultsForRun(ctx, runID)
+	if err != nil {
+		return PreparedRun{}, fmt.Errorf("read prepared context: %w", err)
+	}
+	context := make([]ContextItem, len(results))
+	for i, result := range results {
+		context[i] = ContextItem{AgentType: result.AgentType, Asset: result.Asset, Indicators: result.Indicators}
+	}
+	return PreparedRun{RunID: runID, Context: context}, nil
+}
+
+func saveOutput(ctx context.Context, store *storage.Store, runID, agentType, asset string, output agents.Output) error {
+	return store.SaveResult(ctx, storage.Result{ID: uuid.NewString(), RunID: runID, AgentType: agentType, Asset: asset, Indicators: output.Indicators, CreatedAt: time.Now().UTC()})
+}
+
+func validateRequest(request PrepareRequest) ([]string, error) {
+	if strings.TrimSpace(request.Timeframe) == "" {
+		return nil, fmt.Errorf("timeframe is required")
+	}
+	seen := make(map[string]bool, len(request.Assets))
+	assets := make([]string, 0, len(request.Assets))
+	for _, asset := range request.Assets {
+		asset = strings.TrimSpace(asset)
+		if asset == "" || seen[asset] {
+			return nil, fmt.Errorf("assets must be non-empty and unique")
+		}
+		seen[asset] = true
+		assets = append(assets, asset)
+	}
+	if len(assets) == 0 {
+		return nil, fmt.Errorf("at least one asset is required")
+	}
+	return assets, nil
+}
+
+func validateNarratives(stage string, submissions []NarrativeSubmission, results []storage.AgentResult) error {
+	if stage != "technical" && stage != "derivatives" && stage != "news" && stage != "risk_context" && stage != "macro" {
+		return fmt.Errorf("invalid narrative stage %q", stage)
+	}
+	expected := make(map[string]bool)
+	if stage == "macro" {
+		if !allBaseNarratives(results) {
+			return fmt.Errorf("technical, derivatives, news, and risk_context narratives must be submitted before macro")
+		}
+		expected[""] = true
+	} else {
+		for _, result := range results {
+			if result.AgentType == stage {
+				expected[result.Asset] = true
+			}
+		}
+	}
+	if len(submissions) != len(expected) {
+		return fmt.Errorf("%s requires %d narratives, got %d", stage, len(expected), len(submissions))
+	}
+	seen := make(map[string]bool, len(submissions))
+	for _, submission := range submissions {
+		if !expected[submission.Asset] || seen[submission.Asset] || strings.TrimSpace(submission.Narrative) == "" {
+			return fmt.Errorf("invalid %s narrative submission for asset %q", stage, submission.Asset)
+		}
+		seen[submission.Asset] = true
+	}
+	return nil
+}
+
+func indicatorsFor(results []storage.AgentResult, agentType, asset string) json.RawMessage {
+	for _, result := range results {
+		if result.AgentType == agentType && result.Asset == asset {
+			return result.Indicators
+		}
+	}
+	return nil
+}
+
+func allBaseNarratives(results []storage.AgentResult) bool {
+	for _, result := range results {
+		if (result.AgentType == "technical" || result.AgentType == "derivatives" || result.AgentType == "news" || result.AgentType == "risk_context") && strings.TrimSpace(result.Narrative) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func hasNarrative(results []storage.AgentResult, agentType, asset string) bool {
+	for _, result := range results {
+		if result.AgentType == agentType && result.Asset == asset {
+			return strings.TrimSpace(result.Narrative) != ""
+		}
+	}
+	return false
+}
+
+func assetCount(results []storage.AgentResult) int { return len(assetsFromResults(results)) }
+
+func assetsFromResults(results []storage.AgentResult) []string {
+	assets := make([]string, 0)
+	for _, result := range results {
+		if result.AgentType == "technical" {
+			assets = append(assets, result.Asset)
+		}
+	}
+	return assets
+}
+
+func narratives(results []storage.AgentResult) []agents.CycleNarrative {
 	sources := make([]agents.CycleNarrative, len(results))
 	for i, result := range results {
 		sources[i] = agents.CycleNarrative{AgentType: result.AgentType, Asset: result.Asset, Narrative: result.Narrative}
 	}
-	return sources, nil
+	return sources
 }
 
-func runCommittee(ctx context.Context, store *storage.Store, riskStore *riskstorage.Store, client llm.Client, runID string, assets []string, recordOne func(string, string, agents.Output, error) error, successCount *int) error {
-	sources, err := cycleNarratives(ctx, store, runID)
-	if err != nil {
-		return err
-	}
-	assessments, err := agents.Committee(ctx, client, assets, sources)
-	if err != nil {
-		// Committee failures are intentionally isolated like every existing
-		// analysis agent: prior analysis stays usable without a ranking.
-		fmt.Fprintf(os.Stderr, "committee: %v\n", err)
-		return nil
-	}
+func saveCommittee(ctx context.Context, store *storage.Store, riskStore *riskstorage.Store, runID string, assessments []agents.CommitteeAssessment) error {
 	inputs := make([]ranking.Input, 0, len(assessments))
 	persisted := make(map[string]agents.CommitteeAssessment, len(assessments))
 	for _, assessment := range assessments {
-		indicators := agents.CommitteeIndicators{
-			Thesis: assessment.Thesis, Confidence: assessment.Confidence, OpportunityScore: assessment.OpportunityScore,
-			Evidence: assessment.Evidence,
+		quality, found, err := store.QualityForRanking(ctx, risk.ReferenceExchange, assessment.Asset)
+		if err != nil {
+			return fmt.Errorf("committee/%s data quality: %w", assessment.Asset, err)
 		}
-		quality, found, qualityErr := store.QualityForRanking(ctx, risk.ReferenceExchange, assessment.Asset)
-		if qualityErr != nil {
-			fmt.Fprintf(os.Stderr, "committee/%s: data quality failed: %v\n", assessment.Asset, qualityErr)
-		}
-		if qualityErr == nil && found {
+		indicators := agents.CommitteeIndicators{Thesis: assessment.Thesis, Confidence: assessment.Confidence, OpportunityScore: assessment.OpportunityScore, Evidence: assessment.Evidence}
+		if found {
 			indicators.Quality = quality
-		} else if qualityErr == nil {
-			fmt.Fprintf(os.Stderr, "committee/%s: insufficient 1m data quality window, skipping ranking\n", assessment.Asset)
+			inputs = append(inputs, ranking.Input{Asset: assessment.Asset, OpportunityScore: assessment.OpportunityScore, DataAgeMinutes: quality.DataAgeMinutes, Liquidity: quality.Liquidity, Volatility: quality.Volatility})
+			persisted[assessment.Asset] = assessment
 		}
-		if err := recordOne("committee", assessment.Asset, agents.Output{Indicators: indicators, Narrative: assessment.Narrative}, nil); err != nil {
-			return err
+		if err := saveOutput(ctx, store, runID, "committee", assessment.Asset, agents.Output{Indicators: indicators, Narrative: assessment.Narrative}); err != nil {
+			return fmt.Errorf("save committee/%s: %w", assessment.Asset, err)
 		}
-		*successCount = *successCount + 1
-		if qualityErr != nil || !found {
-			continue
-		}
-		inputs = append(inputs, ranking.Input{Asset: assessment.Asset, OpportunityScore: assessment.OpportunityScore, DataAgeMinutes: quality.DataAgeMinutes, Liquidity: quality.Liquidity, Volatility: quality.Volatility})
-		persisted[assessment.Asset] = assessment
 	}
 	if len(inputs) == 0 {
 		return nil
 	}
 	limits, err := riskStore.GetLimits(ctx)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "committee: read risk limits failed: %v\n", err)
-		return nil
+		return fmt.Errorf("read risk limits: %w", err)
 	}
 	computed, err := ranking.Compute(inputs, ranking.Limits{MaxDataAgeMinutes: limits.MaxDataAgeMinutes, MinLiquidity: limits.MinLiquidity, MaxVolatility: limits.MaxVolatility})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "committee: compute ranking failed: %v\n", err)
-		return nil
+		return fmt.Errorf("compute rankings: %w", err)
 	}
 	rankings := make([]storage.Ranking, 0, len(computed))
 	for _, result := range computed {
 		assessment := persisted[result.Asset]
-		evidence, marshalErr := json.Marshal(assessment.Evidence)
-		if marshalErr != nil {
-			return fmt.Errorf("marshal committee evidence: %w", marshalErr)
+		evidence, err := json.Marshal(assessment.Evidence)
+		if err != nil {
+			return fmt.Errorf("marshal committee evidence: %w", err)
 		}
 		rankings = append(rankings, storage.Ranking{RunID: runID, Asset: result.Asset, Rank: result.Rank, CompositeScore: result.CompositeScore, OpportunityScoreRaw: assessment.OpportunityScore, Thesis: assessment.Thesis, Confidence: assessment.Confidence, Evidence: evidence, ComputedAt: time.Now().UTC()})
 	}
@@ -176,64 +397,4 @@ func runCommittee(ctx context.Context, store *storage.Store, riskStore *riskstor
 		return fmt.Errorf("save rankings: %w", err)
 	}
 	return nil
-}
-
-type resultSaver interface {
-	SaveResult(context.Context, storage.Result) error
-}
-
-func record(ctx context.Context, store resultSaver, runID, agentType, asset string, out agents.Output, agentErr error) (bool, error) {
-	if agentErr != nil {
-		fmt.Fprintf(os.Stderr, "%s/%s: data collection failed: %v\n", agentType, asset, agentErr)
-		return false, nil
-	}
-	if err := store.SaveResult(ctx, storage.Result{ID: uuid.NewString(), RunID: runID, AgentType: agentType, Asset: asset, Indicators: out.Indicators, Narrative: out.Narrative, CreatedAt: time.Now().UTC()}); err != nil {
-		return false, fmt.Errorf("save %s/%s result: %w", agentType, asset, err)
-	}
-	if out.Err != nil {
-		fmt.Fprintf(os.Stderr, "%s/%s: sem narrativa: %v\n", agentType, asset, out.Err)
-		return false, nil
-	}
-	fmt.Fprintf(os.Stderr, "%s/%s: %s\n", agentType, asset, out.Narrative)
-	return true, nil
-}
-
-func abortRun(ctx context.Context, store *storage.Store, runID string, successCount int, runErr error) (string, int, error) {
-	wrappedRunErr := fmt.Errorf("analysis run %s: %w", runID, runErr)
-	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-	if finishErr := store.FinishRun(cleanupCtx, runID, runErr); finishErr != nil {
-		return runID, successCount, errors.Join(wrappedRunErr, fmt.Errorf("finish failed run: %w", finishErr))
-	}
-	return runID, successCount, wrappedRunErr
-}
-
-// RunWithDSN connects its own storage using dsn and calls Run — this
-// indirection exists so callers outside this module (e.g. the MCP
-// server) never need to import analysis/internal/storage or
-// analysis/internal/llm directly, which Go's internal-package
-// visibility rule forbids across module boundaries (a `replace`
-// directive only affects version resolution, not import-path
-// visibility). riskStore is still supplied by the caller since
-// risk-engine/storage is a public package, legal to import from
-// anywhere.
-func RunWithDSN(ctx context.Context, dsn string, riskStore *riskstorage.Store, assets []string, assetNames map[string]string, timeframe string, requestedAgents []string) (runID string, successCount int, results []storage.AgentResult, err error) {
-	store, err := storage.New(ctx, dsn)
-	if err != nil {
-		return "", 0, nil, fmt.Errorf("connect analysis storage: %w", err)
-	}
-	defer store.Close()
-	client, err := llm.NewClient()
-	if err != nil {
-		return "", 0, nil, err
-	}
-	runID, successCount, err = Run(ctx, store, riskStore, client, assets, assetNames, timeframe, requestedAgents)
-	if err != nil {
-		return runID, successCount, nil, err
-	}
-	results, resErr := store.ResultsForRun(ctx, runID)
-	if resErr != nil {
-		return runID, successCount, nil, fmt.Errorf("read back results: %w", resErr)
-	}
-	return runID, successCount, results, nil
 }

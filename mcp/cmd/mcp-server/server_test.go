@@ -3,7 +3,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -40,13 +42,51 @@ func testStores(t *testing.T) (*storage.Store, *riskstorage.Store, *paperstore.S
 	return store, riskStore, paperStore, dsn
 }
 
-// TestServer_ListsAllSixTools connects a real MCP client to the real
+func TestServer_WorkflowSchemasGuideSubscriptionAgents(t *testing.T) {
+	server := newServer(nil, nil, nil, "")
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	ctx := context.Background()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	defer serverSession.Close()
+	clientSession, err := mcp.NewClient(&mcp.Implementation{Name: "test-client"}, nil).Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client.Connect: %v", err)
+	}
+	defer clientSession.Close()
+
+	page, err := clientSession.ListTools(ctx, &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	for _, tool := range page.Tools {
+		var want string
+		switch tool.Name {
+		case "submit_analysis_narratives":
+			want = "for risk_context, must be the empty string"
+		case "submit_committee_assessments":
+			want = "exact accepted enum: bull|bear|neutro"
+		default:
+			continue
+		}
+		schema, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatalf("marshal %s schema: %v", tool.Name, err)
+		}
+		if !strings.Contains(string(schema), want) {
+			t.Errorf("%s schema = %s, want %q", tool.Name, schema, want)
+		}
+	}
+}
+
+// TestServer_ListsAllTools connects a real MCP client to the real
 // server over an in-memory transport (no subprocess) and confirms every
 // tool registered on the server is actually discoverable — the
 // protocol-level check no direct Go-function-call test can give.
-func TestServer_ListsAllSixTools(t *testing.T) {
-	store, riskStore, paperStore, dsn := testStores(t)
-	server := newServer(store, riskStore, paperStore, dsn)
+func TestServer_ListsAllTools(t *testing.T) {
+	server := newServer(nil, nil, nil, "")
 
 	clientTransport, serverTransport := mcp.NewInMemoryTransports()
 	ctx := context.Background()
@@ -66,17 +106,20 @@ func TestServer_ListsAllSixTools(t *testing.T) {
 
 	wantTools := map[string]bool{
 		"get_latest_price": false, "get_risk_state": false, "set_risk_state": false,
-		"run_analysis": false, "run_strategist": false, "run_backtest": false,
-		"get_simulation_status": false, "set_simulation_enabled": false, "run_paper_strategist": false,
+		"prepare_analysis": false, "get_analysis_context": false, "submit_analysis_narratives": false, "submit_committee_assessments": false,
+		"prepare_strategy": false, "apply_strategy_intents": false, "get_automation_controls": false,
+		"set_automation_controls": false, "run_backtest": false,
 	}
 	page, err := clientSession.ListTools(ctx, &mcp.ListToolsParams{})
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
 	for _, tool := range page.Tools {
-		if _, ok := wantTools[tool.Name]; ok {
-			wantTools[tool.Name] = true
+		if _, ok := wantTools[tool.Name]; !ok {
+			t.Errorf("unexpected tool %q in ListTools result", tool.Name)
+			continue
 		}
+		wantTools[tool.Name] = true
 	}
 	for name, found := range wantTools {
 		if !found {

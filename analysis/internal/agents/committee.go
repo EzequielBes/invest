@@ -1,16 +1,11 @@
 package agents
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
-
-	"analysis/internal/llm"
 )
-
-const committeeSystemPrompt = `Você é o chefe de mesa de um comitê de pesquisa. Compare somente as narrativas fornecidas, sem inventar dados nem recomendar execução. Responda APENAS JSON válido no formato {"assessments":[...]}. Deve existir exatamente uma avaliação para cada ativo elegível. Cada avaliação contém asset, thesis (bull, bear ou neutro), confidence (0 a 1), opportunity_score (0 a 1), narrative (tese curta em português) e evidence (lista não vazia de objetos com agent_type e citation). agent_type deve referenciar technical, derivatives, news, macro ou risk_context; citation deve citar um ponto das narrativas fornecidas. Divergências entre papéis devem aparecer na narrativa ou evidência.`
 
 type Evidence struct {
 	AgentType string `json:"agent_type"`
@@ -36,32 +31,6 @@ type CommitteeIndicators struct {
 
 type committeeResponse struct {
 	Assessments []CommitteeAssessment `json:"assessments"`
-}
-
-// Committee compares eligible assets in one LLM call. An eligible asset has
-// all three per-asset narratives required by strategist as well.
-func Committee(ctx context.Context, client llm.Client, assets []string, sources []CycleNarrative) ([]CommitteeAssessment, error) {
-	eligible := eligibleAssets(assets, sources)
-	if len(eligible) == 0 {
-		return nil, fmt.Errorf("committee: no asset has technical, derivatives, and news narratives")
-	}
-	var prompt strings.Builder
-	fmt.Fprintf(&prompt, "Ativos elegíveis: %s\n\n", strings.Join(eligible, ", "))
-	for _, source := range sources {
-		if source.Narrative == "" || source.AgentType == "committee" || source.Asset != "" && !contains(eligible, source.Asset) {
-			continue
-		}
-		label := source.AgentType
-		if source.Asset != "" {
-			label += "/" + source.Asset
-		}
-		fmt.Fprintf(&prompt, "[%s]\n%s\n\n", label, source.Narrative)
-	}
-	raw, err := client.Summarize(ctx, committeeSystemPrompt, prompt.String())
-	if err != nil {
-		return nil, fmt.Errorf("committee: summarize: %w", err)
-	}
-	return ParseCommitteeResponse(raw, eligible)
 }
 
 // ParseCommitteeResponse is the boundary for untrusted structured LLM output.
@@ -108,7 +77,7 @@ func ParseCommitteeResponse(raw string, expectedAssets []string) ([]CommitteeAss
 	return response.Assessments, nil
 }
 
-func eligibleAssets(assets []string, sources []CycleNarrative) []string {
+func EligibleAssets(assets []string, sources []CycleNarrative) []string {
 	byAsset := make(map[string]map[string]bool, len(assets))
 	for _, source := range sources {
 		if source.Asset == "" || source.Narrative == "" {
@@ -127,15 +96,6 @@ func eligibleAssets(assets []string, sources []CycleNarrative) []string {
 		}
 	}
 	return eligible
-}
-
-func contains(items []string, want string) bool {
-	for _, item := range items {
-		if item == want {
-			return true
-		}
-	}
-	return false
 }
 
 func unitInterval(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 && v <= 1 }

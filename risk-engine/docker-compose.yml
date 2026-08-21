@@ -3,7 +3,7 @@ services:
     image: golang:1.22
     working_dir: /app
     volumes:
-      - .:/app
+      - .:/app:z
       - go-mod-cache:/go/pkg/mod
     environment:
       DATABASE_URL: postgres://marketdata:marketdata@timescaledb:5432/marketdata?sslmode=disable

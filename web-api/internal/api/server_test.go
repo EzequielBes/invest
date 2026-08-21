@@ -14,30 +14,32 @@ import (
 )
 
 type fakeStore struct {
-	decisions        []storage.Decision
-	decisionsErr     error
-	paperDecisions   []storage.Decision
-	paperDecErr      error
-	riskState        storage.RiskStateResponse
-	riskStateErr     error
-	analysisRuns     []storage.AnalysisRun
-	analysisErr      error
-	analysisDetail   storage.AnalysisRunDetail
-	backtests        []storage.BacktestRun
-	backtestsErr     error
-	backtestDetail   storage.BacktestDetail
-	backtestErr      error
-	validationRuns   []storage.ValidationRun
-	validationErr    error
-	validationDetail storage.ValidationRunDetail
-	equitySnapshots  []storage.EquityPoint
-	equityErr        error
-	news             []storage.NewsItem
-	newsErr          error
-	price            float64
-	priceFound       bool
-	priceErr         error
-	lastLimit        int
+	decisions         []storage.Decision
+	decisionsErr      error
+	paperDecisions    []storage.Decision
+	paperDecErr       error
+	intentOutcomes    []storage.IntentOutcome
+	intentOutcomesErr error
+	riskState         storage.RiskStateResponse
+	riskStateErr      error
+	analysisRuns      []storage.AnalysisRun
+	analysisErr       error
+	analysisDetail    storage.AnalysisRunDetail
+	backtests         []storage.BacktestRun
+	backtestsErr      error
+	backtestDetail    storage.BacktestDetail
+	backtestErr       error
+	validationRuns    []storage.ValidationRun
+	validationErr     error
+	validationDetail  storage.ValidationRunDetail
+	equitySnapshots   []storage.EquityPoint
+	equityErr         error
+	news              []storage.NewsItem
+	newsErr           error
+	price             float64
+	priceFound        bool
+	priceErr          error
+	lastLimit         int
 }
 
 func (f *fakeStore) RecentDecisions(_ context.Context, limit int) ([]storage.Decision, error) {
@@ -47,6 +49,10 @@ func (f *fakeStore) RecentDecisions(_ context.Context, limit int) ([]storage.Dec
 func (f *fakeStore) RecentPaperDecisions(_ context.Context, limit int) ([]storage.Decision, error) {
 	f.lastLimit = limit
 	return f.paperDecisions, f.paperDecErr
+}
+func (f *fakeStore) RecentIntentOutcomes(_ context.Context, limit int) ([]storage.IntentOutcome, error) {
+	f.lastLimit = limit
+	return f.intentOutcomes, f.intentOutcomesErr
 }
 func (f *fakeStore) LiveRiskState(context.Context) (storage.RiskStateResponse, error) {
 	return f.riskState, f.riskStateErr
@@ -93,6 +99,10 @@ type fakePaperStore struct {
 	portfolioErr  error
 	fills         []paperstore.Fill
 	fillsErr      error
+	controls      paperstore.AutomationControls
+	controlsErr   error
+	patchErr      error
+	lastPatch     paperstore.AutomationPatch
 }
 
 func (f *fakePaperStore) Enabled(context.Context) (bool, error) { return f.enabled, f.enabledErr }
@@ -105,6 +115,22 @@ func (f *fakePaperStore) Portfolio(context.Context) (float64, map[string]float64
 }
 func (f *fakePaperStore) RecentFills(context.Context, int) ([]paperstore.Fill, error) {
 	return f.fills, f.fillsErr
+}
+func (f *fakePaperStore) GetAutomationControls(context.Context) (paperstore.AutomationControls, error) {
+	return f.controls, f.controlsErr
+}
+func (f *fakePaperStore) PatchAutomationControls(_ context.Context, patch paperstore.AutomationPatch) (paperstore.AutomationControls, error) {
+	f.lastPatch = patch
+	if patch.Enabled != nil {
+		f.controls.Enabled = *patch.Enabled
+	}
+	if patch.TestnetEnabled != nil {
+		f.controls.TestnetEnabled = *patch.TestnetEnabled
+	}
+	if patch.ActiveAgent != nil {
+		f.controls.ActiveAgent = *patch.ActiveAgent
+	}
+	return f.controls, f.patchErr
 }
 
 // newTestServer builds a server for tests that never hit POST
@@ -276,5 +302,60 @@ func TestPaperDecisionsEndpointReturnsJSON(t *testing.T) {
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/paper-decisions", nil))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"ETH"`) {
 		t.Fatalf("status/body = %d/%s, want 200 with the paper decision", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestIntentOutcomesEndpointReturnsJSON(t *testing.T) {
+	store := &fakeStore{intentOutcomes: []storage.IntentOutcome{{Asset: "BTC", HorizonHours: 1, Correct: true}}}
+	recorder := httptest.NewRecorder()
+	newTestServer(store).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/intent-outcomes", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"horizon_hours":1`) {
+		t.Fatalf("status/body = %d/%s, want intent outcomes", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestAutomationControlsEndpoints(t *testing.T) {
+	paper := &fakePaperStore{controls: paperstore.AutomationControls{Enabled: true, ActiveAgent: "claude_code"}}
+	server := newTestServerWithPaper(&fakeStore{}, paper)
+
+	get := httptest.NewRecorder()
+	server.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/api/automation-controls", nil))
+	if get.Code != http.StatusOK || !strings.Contains(get.Body.String(), `"paper_enabled":true`) {
+		t.Fatalf("GET status/body = %d/%s, want controls", get.Code, get.Body.String())
+	}
+
+	patch := httptest.NewRecorder()
+	server.ServeHTTP(patch, httptest.NewRequest(http.MethodPatch, "/api/automation-controls", strings.NewReader(`{"testnet_enabled":true}`)))
+	if patch.Code != http.StatusOK || !paper.controls.TestnetEnabled || paper.lastPatch.Enabled != nil {
+		t.Fatalf("PATCH status/controls/patch = %d/%+v/%+v, want only testnet enabled", patch.Code, paper.controls, paper.lastPatch)
+	}
+}
+
+func TestPatchAutomationControlsRejectsInvalidRequest(t *testing.T) {
+	server := newTestServer(&fakeStore{})
+	for _, body := range []string{`{}`, `{"enabled":true}`, `{"paper_enabled":null}`, `{"paper_enabled":"true"}`, `{"active_agent":"other"}`, `{"paper_enabled":true} trailing`} {
+		t.Run(body, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPatch, "/api/automation-controls", strings.NewReader(body)))
+			if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "invalid automation controls") {
+				t.Fatalf("status/body = %d/%s, want generic 400", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestAutomationControlsErrorsAreGeneric(t *testing.T) {
+	paper := &fakePaperStore{controlsErr: errors.New("database password leaked")}
+	recorder := httptest.NewRecorder()
+	newTestServerWithPaper(&fakeStore{}, paper).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/automation-controls", nil))
+	if recorder.Code != http.StatusInternalServerError || strings.Contains(recorder.Body.String(), "database password leaked") {
+		t.Fatalf("status/body = %d/%s, want generic 500", recorder.Code, recorder.Body.String())
+	}
+
+	paper = &fakePaperStore{patchErr: errors.New("database password leaked")}
+	recorder = httptest.NewRecorder()
+	newTestServerWithPaper(&fakeStore{}, paper).ServeHTTP(recorder, httptest.NewRequest(http.MethodPatch, "/api/automation-controls", strings.NewReader(`{"paper_enabled":true}`)))
+	if recorder.Code != http.StatusInternalServerError || strings.Contains(recorder.Body.String(), "database password leaked") {
+		t.Fatalf("status/body = %d/%s, want generic 500", recorder.Code, recorder.Body.String())
 	}
 }

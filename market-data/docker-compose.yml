@@ -8,7 +8,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - ./migrations:/docker-entrypoint-initdb.d
+      - ./migrations:/docker-entrypoint-initdb.d:z
       - timescale-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U marketdata"]
@@ -20,7 +20,7 @@ services:
     image: golang:1.22
     working_dir: /app
     volumes:
-      - .:/app
+      - .:/app:z
       - go-mod-cache:/go/pkg/mod
     environment:
       TEST_DATABASE_URL: postgres://marketdata:marketdata@timescaledb:5432/marketdata?sslmode=disable
@@ -42,7 +42,7 @@ services:
     image: golang:1.22
     working_dir: /app
     volumes:
-      - .:/app
+      - .:/app:z
       - go-mod-cache:/go/pkg/mod
     environment:
       DATABASE_URL: postgres://marketdata:marketdata@timescaledb:5432/marketdata?sslmode=disable

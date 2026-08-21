@@ -22,6 +22,7 @@ const (
 type dataStore interface {
 	RecentDecisions(context.Context, int) ([]storage.Decision, error)
 	RecentPaperDecisions(context.Context, int) ([]storage.Decision, error)
+	RecentIntentOutcomes(context.Context, int) ([]storage.IntentOutcome, error)
 	LiveRiskState(context.Context) (storage.RiskStateResponse, error)
 	RecentAnalysisRuns(context.Context, int) ([]storage.AnalysisRun, error)
 	AnalysisRunDetail(context.Context, string) (storage.AnalysisRunDetail, error)
@@ -39,6 +40,8 @@ type dataStore interface {
 type paperStore interface {
 	Enabled(context.Context) (bool, error)
 	SetEnabled(context.Context, bool) error
+	GetAutomationControls(context.Context) (paperstore.AutomationControls, error)
+	PatchAutomationControls(context.Context, paperstore.AutomationPatch) (paperstore.AutomationControls, error)
 	Portfolio(context.Context) (cash float64, positions map[string]float64, err error)
 	RecentFills(context.Context, int) ([]paperstore.Fill, error)
 }
@@ -64,7 +67,10 @@ func NewServer(store dataStore, dsn string, riskStore *riskstorage.Store, paper 
 	mux.HandleFunc("GET /api/config-status", handleConfigStatus())
 	mux.HandleFunc("GET /api/simulation/status", handleSimulationStatus(paper))
 	mux.HandleFunc("POST /api/simulation/toggle", handleSimulationToggle(paper))
+	mux.HandleFunc("GET /api/automation-controls", handleAutomationControls(paper))
+	mux.HandleFunc("PATCH /api/automation-controls", handlePatchAutomationControls(paper))
 	mux.HandleFunc("GET /api/paper-decisions", handlePaperDecisions(store))
+	mux.HandleFunc("GET /api/intent-outcomes", handleIntentOutcomes(store))
 	if frontendDir != "" {
 		mux.Handle("/", http.FileServer(http.Dir(frontendDir)))
 	}

@@ -12,6 +12,7 @@ import (
 
 	"execution/internal/binanceclient"
 	"execution/internal/storage"
+	"execution/paperstore"
 )
 
 const testnetBaseURL = "https://testnet.binancefuture.com"
@@ -61,10 +62,18 @@ type executionStore interface {
 	Close()
 }
 
+// controlStore serializes an enabled check with order submission, avoiding a
+// check-then-submit race with a concurrent automation-controls update.
+type controlStore interface {
+	Close()
+	WithTestnetEnabled(context.Context, func() error) error
+}
+
 // BinanceExecutor is the production implementation of Client.
 type BinanceExecutor struct {
 	binance      binanceOps
 	store        executionStore
+	controls     controlStore
 	pollInterval time.Duration
 	fillTimeout  time.Duration
 }
@@ -83,9 +92,15 @@ func NewClient(ctx context.Context, dsn string) (*BinanceExecutor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("executor: connect storage: %w", err)
 	}
+	controls, err := paperstore.New(ctx, dsn)
+	if err != nil {
+		store.Close()
+		return nil, fmt.Errorf("executor: connect automation controls: %w", err)
+	}
 	return &BinanceExecutor{
 		binance:      binanceclient.New(apiKey, secret, testnetBaseURL),
 		store:        store,
+		controls:     controls,
 		pollInterval: 2 * time.Second,
 		fillTimeout:  30 * time.Second,
 	}, nil
@@ -93,6 +108,7 @@ func NewClient(ctx context.Context, dsn string) (*BinanceExecutor, error) {
 
 func (e *BinanceExecutor) Close() {
 	e.store.Close()
+	e.controls.Close()
 }
 
 func (e *BinanceExecutor) FetchPortfolio(ctx context.Context) (float64, map[string]float64, error) {
@@ -113,9 +129,14 @@ func (e *BinanceExecutor) FetchPortfolio(ctx context.Context) (float64, map[stri
 // SaveExecution before returning, using clientOrderID as the row's ID
 // (the same value the caller minted as the decision's own ID).
 func (e *BinanceExecutor) Execute(ctx context.Context, asset string, side risk.Side, quantity, price float64, clientOrderID string) (Outcome, error) {
-	order, err := e.binance.PlaceLimitOrder(ctx, asset, string(side), quantity, price, clientOrderID)
+	var order binanceclient.Order
+	err := e.controls.WithTestnetEnabled(ctx, func() error {
+		var err error
+		order, err = e.binance.PlaceLimitOrder(ctx, asset, string(side), quantity, price, clientOrderID)
+		return err
+	})
 	if err != nil {
-		return Outcome{}, fmt.Errorf("executor: %s: place order: %w", asset, err)
+		return Outcome{}, fmt.Errorf("executor: %s: authorize and place order: %w", asset, err)
 	}
 
 	// A poll failure here falls through to the cancel-and-classify logic
