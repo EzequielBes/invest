@@ -1,299 +1,251 @@
-// strategist/runner/runner.go
+// Package runner exposes strategist's provider-neutral intent workflow.
 package runner
 
 import (
 	"context"
 	"fmt"
-	"os"
+	"math"
+	"sort"
 	"strings"
 	"time"
-
-	"github.com/google/uuid"
 
 	"risk-engine/risk"
 	riskstorage "risk-engine/storage"
 
 	"execution/executor"
-
-	"strategist/internal/llm"
 	"strategist/internal/storage"
-	"strategist/internal/strategist"
 )
 
 const priceTimeframe = "1m"
 
-// Run decides on every requested asset, executes approved decisions for
-// real via execClient, and persists the outcome. It returns an error
-// only for a whole-run failure (can't read analysis results, can't fetch
-// the real portfolio, can't price a held position, zero portfolio
-// value); a single asset failing to decide is logged to stderr and
-// skipped, not returned as an error. Exported so both cmd/strategist and
-// other modules (the MCP server) can call it directly.
-func Run(
-	ctx context.Context,
-	store *storage.Store,
-	riskStore *riskstorage.Store,
-	client llm.Client,
-	execClient executor.Client,
-	runID string,
-	assets []string,
-	dailyLoss, weeklyLoss, drawdown float64,
-	consecutiveLosses int,
-) error {
-	return run(ctx, store, riskStore, client, execClient, runID, assets, nil, dailyLoss, weeklyLoss, drawdown, consecutiveLosses)
+type Ranking struct {
+	Asset          string
+	Rank           int
+	CompositeScore float64
+	Thesis         string
+	Confidence     float64
 }
 
-// RunWithRankings is the paper-only counterpart to Run. Rankings are read by
-// this module from analysis's table and only change prompts for assets that
-// actually have a ranking; old runs fall back to Run's established prompt.
-func RunWithRankings(
-	ctx context.Context,
-	store *storage.Store,
-	riskStore *riskstorage.Store,
-	client llm.Client,
-	execClient executor.Client,
-	runID string,
-	assets []string,
-	rankings []storage.Ranking,
-	dailyLoss, weeklyLoss, drawdown float64,
-	consecutiveLosses int,
-) error {
-	return run(ctx, store, riskStore, client, execClient, runID, assets, rankings, dailyLoss, weeklyLoss, drawdown, consecutiveLosses)
+// StrategyContext is the completed analysis material a caller uses to form
+// stable intents. Rankings are ordered best-first and shared by all targets.
+type StrategyContext struct {
+	AnalysisRunID string
+	Rankings      []Ranking
 }
 
-func run(
-	ctx context.Context,
-	store *storage.Store,
-	riskStore *riskstorage.Store,
-	client llm.Client,
-	execClient executor.Client,
-	runID string,
-	assets []string,
-	rankings []storage.Ranking,
-	dailyLoss, weeklyLoss, drawdown float64,
-	consecutiveLosses int,
-) error {
-	results, err := store.ResultsForRun(ctx, runID)
-	if err != nil {
-		return fmt.Errorf("read analysis results: %w", err)
-	}
-	byAsset := make(map[string][]storage.AgentResult)
-	var riskContext storage.AgentResult
-	for _, r := range results {
-		if r.AgentType == "risk_context" {
-			riskContext = r
-			continue
-		}
-		byAsset[r.Asset] = append(byAsset[r.Asset], r)
-	}
+// Intent is caller-supplied structured strategy output. ID must be stable
+// across retries of the same intended action.
+type Intent struct {
+	ID         string
+	Asset      string
+	Side       string
+	Confidence float64
+	SizingPct  float64
+	Rationale  string
+}
 
-	cash, positions, err := execClient.FetchPortfolio(ctx)
-	if err != nil {
-		return fmt.Errorf("fetch portfolio: %w", err)
-	}
-	portfolio, portfolioValue, err := buildPortfolio(ctx, store, positions, cash, dailyLoss, weeklyLoss, drawdown, consecutiveLosses)
-	if err != nil {
-		return fmt.Errorf("build portfolio: %w", err)
-	}
+// Target independently sizes and risk-checks shared intents against its own
+// portfolio. ID distinguishes paper and testnet application idempotency.
+type Target struct {
+	ID                              string
+	Executor                        executor.Client
+	DailyLoss, WeeklyLoss, Drawdown float64
+	ConsecutiveLosses               int
+}
 
-	for _, asset := range assets {
-		price, found, err := store.LatestPrice(ctx, risk.ReferenceExchange, asset, priceTimeframe)
+type Application struct {
+	IntentID         string
+	TargetID         string
+	Asset            string
+	Side             string
+	Quantity         float64
+	Value            float64
+	RiskAllowed      *bool
+	RiskReasons      []string
+	ExecutionStatus  string
+	ExecutionOrderID string
+}
+
+// PrepareWithDSN returns rankings only for a successfully completed analysis
+// run. It deliberately performs no model call or portfolio-specific sizing.
+func PrepareWithDSN(ctx context.Context, dsn, analysisRunID string) (StrategyContext, error) {
+	if strings.TrimSpace(analysisRunID) == "" {
+		return StrategyContext{}, fmt.Errorf("analysis run ID is required")
+	}
+	store, err := storage.New(ctx, dsn)
+	if err != nil {
+		return StrategyContext{}, fmt.Errorf("connect strategist storage: %w", err)
+	}
+	defer store.Close()
+	completed, err := store.CompletedRun(ctx, analysisRunID)
+	if err != nil {
+		return StrategyContext{}, fmt.Errorf("read analysis run: %w", err)
+	}
+	if !completed {
+		return StrategyContext{}, fmt.Errorf("analysis run %s is not completed", analysisRunID)
+	}
+	rankings, err := store.RankingsForRun(ctx, analysisRunID)
+	if err != nil {
+		return StrategyContext{}, fmt.Errorf("read analysis rankings: %w", err)
+	}
+	context := StrategyContext{AnalysisRunID: analysisRunID, Rankings: make([]Ranking, len(rankings))}
+	for i, ranking := range rankings {
+		context.Rankings[i] = Ranking{Asset: ranking.Asset, Rank: ranking.Rank, CompositeScore: ranking.CompositeScore, Thesis: ranking.Thesis, Confidence: ranking.Confidence}
+	}
+	return context, nil
+}
+
+// ApplyIntentsWithDSN validates caller-supplied intents, then applies every
+// intent to every target. Each target fetches and values its own portfolio,
+// so paper and testnet share strategy but not sizing or risk decisions.
+func ApplyIntentsWithDSN(ctx context.Context, dsn string, riskStore *riskstorage.Store, strategy StrategyContext, intents []Intent, targets []Target) ([]Application, error) {
+	prepared, err := PrepareWithDSN(ctx, dsn, strategy.AnalysisRunID)
+	if err != nil {
+		return nil, err
+	}
+	strategy = prepared
+	if err := validate(strategy, intents, targets); err != nil {
+		return nil, err
+	}
+	if riskStore == nil {
+		return nil, fmt.Errorf("risk store is required")
+	}
+	store, err := storage.New(ctx, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("connect strategist storage: %w", err)
+	}
+	defer store.Close()
+
+	for _, target := range targets {
+		cash, positions, err := target.Executor.FetchPortfolio(ctx)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s: read price: %v\n", asset, err)
-			continue
+			return nil, fmt.Errorf("fetch %s portfolio: %w", target.ID, err)
 		}
-		if !found {
-			fmt.Fprintf(os.Stderr, "%s: no price data, skipping\n", asset)
-			continue
-		}
-
-		decisionID := uuid.NewString()
-		var outcome strategist.Outcome
-		if len(rankings) == 0 {
-			outcome, err = strategist.Decide(ctx, riskStore, client, execClient, decisionID, asset, byAsset[asset], riskContext, portfolio, portfolioValue, price)
-		} else {
-			outcome, err = strategist.DecideWithRanking(ctx, riskStore, client, execClient, decisionID, asset, byAsset[asset], riskContext, rankings, portfolio, portfolioValue, price)
-		}
+		portfolio, value, err := buildPortfolio(ctx, store, positions, cash, target)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", asset, err)
-			continue
+			return nil, fmt.Errorf("build %s portfolio: %w", target.ID, err)
 		}
-		if outcome.RiskErr != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", outcome.RiskErr)
+		for _, intent := range intents {
+			if err := apply(ctx, store, riskStore, strategy.AnalysisRunID, target, intent, portfolio, value); err != nil {
+				return nil, err
+			}
 		}
-		if outcome.ExecutionErr != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", outcome.ExecutionErr)
+	}
+	return applications(ctx, store, intents)
+}
+
+func validate(strategy StrategyContext, intents []Intent, targets []Target) error {
+	if strings.TrimSpace(strategy.AnalysisRunID) == "" || len(strategy.Rankings) == 0 {
+		return fmt.Errorf("completed ranked strategy context is required")
+	}
+	ranked := make(map[string]bool, len(strategy.Rankings))
+	for _, ranking := range strategy.Rankings {
+		ranked[ranking.Asset] = true
+	}
+	seen := make(map[string]bool, len(intents))
+	for _, intent := range intents {
+		if strings.TrimSpace(intent.ID) == "" || seen[intent.ID] || !ranked[intent.Asset] ||
+			(intent.Side != "buy" && intent.Side != "sell" && intent.Side != "hold") ||
+			intent.Confidence < 0 || intent.Confidence > 1 || intent.SizingPct < 0 || intent.SizingPct > 1 {
+			return fmt.Errorf("invalid intent %q", intent.ID)
 		}
-		if err := save(ctx, store, runID, decisionID, asset, outcome); err != nil {
-			fmt.Fprintf(os.Stderr, "%s: save decision: %v\n", asset, err)
-			continue
+		seen[intent.ID] = true
+	}
+	if len(intents) == 0 {
+		return fmt.Errorf("at least one intent is required")
+	}
+	seen = make(map[string]bool, len(targets))
+	for _, target := range targets {
+		if strings.TrimSpace(target.ID) == "" || seen[target.ID] || target.Executor == nil {
+			return fmt.Errorf("invalid target %q", target.ID)
 		}
-		report(asset, outcome)
+		seen[target.ID] = true
+	}
+	if len(targets) == 0 {
+		return fmt.Errorf("at least one target is required")
 	}
 	return nil
 }
 
-// buildPortfolio prices every held position (fatal for the whole run if
-// any is missing — an inaccurate portfolio valuation makes every
-// risk.Evaluate call downstream meaningless) and totals portfolio value
-// (cash + all position values) for sizing. A total <= 0 is also fatal —
-// see sub-project 5's final review for why a zero-value portfolio must
-// not silently size zero-quantity "approved" trades.
-func buildPortfolio(ctx context.Context, store *storage.Store, positions map[string]float64, cash float64, dailyLoss, weeklyLoss, drawdown float64, consecutiveLosses int) (risk.PortfolioState, float64, error) {
+func buildPortfolio(ctx context.Context, store *storage.Store, positions map[string]float64, cash float64, target Target) (risk.PortfolioState, float64, error) {
 	riskPositions := make(map[string]risk.Position, len(positions))
 	total := cash
-	for symbol, qty := range positions {
-		price, found, err := store.LatestPrice(ctx, risk.ReferenceExchange, symbol, priceTimeframe)
-		if err != nil {
-			return risk.PortfolioState{}, 0, fmt.Errorf("price for held position %s: %w", symbol, err)
+	for asset, quantity := range positions {
+		price, found, err := store.LatestPrice(ctx, risk.ReferenceExchange, asset, priceTimeframe)
+		if err != nil || !found {
+			if err != nil {
+				return risk.PortfolioState{}, 0, err
+			}
+			return risk.PortfolioState{}, 0, fmt.Errorf("no price data for held position %s", asset)
 		}
-		if !found {
-			return risk.PortfolioState{}, 0, fmt.Errorf("no price data for held position %s on %s", symbol, risk.ReferenceExchange)
-		}
-		value := qty * price
-		riskPositions[symbol] = risk.Position{Asset: symbol, Quantity: qty, Value: value}
+		value := quantity * price
+		riskPositions[asset] = risk.Position{Asset: asset, Quantity: quantity, Value: value}
 		total += value
 	}
-	portfolio := risk.PortfolioState{
-		Positions:         riskPositions,
-		Cash:              cash,
-		DailyLoss:         dailyLoss,
-		WeeklyLoss:        weeklyLoss,
-		Drawdown:          drawdown,
-		ConsecutiveLosses: consecutiveLosses,
-	}
 	if total <= 0 {
-		return risk.PortfolioState{}, 0, fmt.Errorf("portfolio value is zero — check the exchange account has funds")
+		return risk.PortfolioState{}, 0, fmt.Errorf("portfolio value is zero")
 	}
-	return portfolio, total, nil
+	return risk.PortfolioState{Positions: riskPositions, Cash: cash, DailyLoss: target.DailyLoss, WeeklyLoss: target.WeeklyLoss, Drawdown: target.Drawdown, ConsecutiveLosses: target.ConsecutiveLosses}, total, nil
 }
 
-func save(ctx context.Context, store *storage.Store, runID, decisionID, asset string, outcome strategist.Outcome) error {
-	d := storage.Decision{
-		ID: decisionID, AnalysisRunID: runID, Asset: asset,
-		Side: outcome.Decision.Side, Confidence: outcome.Decision.Confidence,
-		SizingPct: outcome.Decision.SizingPct, Rationale: outcome.Decision.Rationale,
-		ProposedQuantity: outcome.Quantity, ProposedValue: outcome.Value,
-		CreatedAt: time.Now().UTC(),
+func apply(ctx context.Context, store *storage.Store, riskStore *riskstorage.Store, runID string, target Target, intent Intent, portfolio risk.PortfolioState, portfolioValue float64) error {
+	price, found, err := store.LatestPrice(ctx, risk.ReferenceExchange, intent.Asset, priceTimeframe)
+	if err != nil || !found {
+		if err != nil {
+			return fmt.Errorf("read %s price: %w", intent.Asset, err)
+		}
+		return fmt.Errorf("no price data for %s", intent.Asset)
 	}
-	if outcome.Risk != nil {
-		allowed := outcome.Risk.Allowed
-		d.RiskAllowed = &allowed
-		d.RiskReasons = outcome.Risk.Reasons
-	}
-	if outcome.Execution != nil {
-		status := outcome.Execution.Status
-		orderID := outcome.Execution.OrderID
-		filledQty := outcome.Execution.FilledQuantity
-		filledPrice := outcome.Execution.FilledPrice
-		d.ExecutionStatus = &status
-		d.ExecutionOrderID = &orderID
-		d.ExecutionFilledQuantity = &filledQty
-		d.ExecutionFilledPrice = &filledPrice
-	}
-	return store.SaveDecision(ctx, d)
-}
-
-func report(asset string, outcome strategist.Outcome) {
-	if outcome.Decision.Side == "hold" {
-		fmt.Fprintf(os.Stderr, "%s: hold — %s\n", asset, outcome.Decision.Rationale)
-		return
-	}
-	status := "risk-engine unavailable"
-	if outcome.Risk != nil {
-		if outcome.Risk.Allowed {
-			status = "approved"
-		} else {
-			status = fmt.Sprintf("rejected (%s)", strings.Join(outcome.Risk.Reasons, "; "))
+	quantity := 0.0
+	if intent.Side != "hold" {
+		quantity = intent.SizingPct * portfolioValue / price
+		if intent.Side == "sell" {
+			quantity = math.Min(quantity, portfolio.Positions[intent.Asset].Quantity)
 		}
 	}
-	execStatus := "not executed"
-	if outcome.Execution != nil {
-		execStatus = fmt.Sprintf("%s (%.6f @ %.2f)", outcome.Execution.Status, outcome.Execution.FilledQuantity, outcome.Execution.FilledPrice)
+	application := storage.IntentApplication{IntentID: intent.ID, TargetID: target.ID, AnalysisRunID: runID, Asset: intent.Asset, Side: intent.Side, Confidence: intent.Confidence, SizingPct: intent.SizingPct, Rationale: intent.Rationale, ProposedQuantity: quantity, ProposedValue: quantity * price, ExecutionStatus: "applying", CreatedAt: time.Now().UTC()}
+	created, err := store.CreateIntentApplication(ctx, application)
+	if err != nil || !created {
+		return err
 	}
-	fmt.Fprintf(os.Stderr, "%s: %s %.6f (%s, %s) — %s\n", asset, outcome.Decision.Side, outcome.Quantity, status, execStatus, outcome.Decision.Rationale)
+	if intent.Side == "hold" || quantity <= 0 {
+		return store.CompleteIntentApplication(ctx, intent.ID, target.ID, "not_applicable", nil, nil, nil)
+	}
+	decision, err := risk.Evaluate(ctx, riskStore, portfolio, risk.ProposedOperation{Asset: intent.Asset, Side: risk.Side(intent.Side), Quantity: quantity, Value: application.ProposedValue}, risk.EvalOptions{})
+	if err != nil {
+		return store.SetIntentApplicationRisk(ctx, intent.ID, target.ID, "risk_error", nil, nil)
+	}
+	if !decision.Allowed {
+		return store.SetIntentApplicationRisk(ctx, intent.ID, target.ID, "rejected", &decision.Allowed, decision.Reasons)
+	}
+	if err := store.SetIntentApplicationRisk(ctx, intent.ID, target.ID, "executing", &decision.Allowed, decision.Reasons); err != nil {
+		return err
+	}
+	outcome, err := target.Executor.Execute(ctx, intent.Asset, risk.Side(intent.Side), quantity, price, intent.ID)
+	if err != nil {
+		return store.CompleteIntentApplication(ctx, intent.ID, target.ID, "execution_error", nil, nil, nil)
+	}
+	return store.CompleteIntentApplication(ctx, intent.ID, target.ID, outcome.Status, &outcome.OrderID, &outcome.FilledQuantity, &outcome.FilledPrice)
 }
 
-// RunWithDSN connects its own storage and a real Binance execution client
-// using dsn, then delegates to RunWithExecutor.
-func RunWithDSN(ctx context.Context, dsn string, riskStore *riskstorage.Store, analysisRunID string, assets []string, dailyLoss, weeklyLoss, drawdown float64, consecutiveLosses int) ([]storage.Decision, error) {
-	execClient, err := executor.NewClient(ctx, dsn)
+func applications(ctx context.Context, store *storage.Store, intents []Intent) ([]Application, error) {
+	ids := make([]string, len(intents))
+	for i, intent := range intents {
+		ids[i] = intent.ID
+	}
+	recorded, err := store.IntentApplications(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
-	defer execClient.Close()
-	return RunWithExecutor(ctx, dsn, riskStore, execClient, analysisRunID, assets, dailyLoss, weeklyLoss, drawdown, consecutiveLosses)
-}
-
-// RunWithExecutor mirrors RunWithDSN but takes execClient as a parameter
-// instead of always constructing the real Binance executor — lets a
-// caller substitute another executor.Client implementation (e.g.
-// execution/paperexec's simulated fills) to run the exact same
-// analysis-results-to-decision pipeline (real LLM call, real risk-engine
-// validation) without ever touching a real or testnet exchange account.
-// Same cross-module-visibility reason as analysis/runner.RunWithDSN
-// (sub-project 6, Task 6): callers outside this module can't import
-// strategist/internal/storage or strategist/internal/llm directly, so
-// this function is the module's public entry point for exactly that kind
-// of caller (the MCP server).
-func RunWithExecutor(ctx context.Context, dsn string, riskStore *riskstorage.Store, execClient executor.Client, analysisRunID string, assets []string, dailyLoss, weeklyLoss, drawdown float64, consecutiveLosses int) ([]storage.Decision, error) {
-	store, err := storage.New(ctx, dsn)
-	if err != nil {
-		return nil, fmt.Errorf("connect strategist storage: %w", err)
-	}
-	defer store.Close()
-	client, err := llm.NewClient()
-	if err != nil {
-		return nil, err
-	}
-	startedAt := time.Now().UTC()
-	if err := Run(ctx, store, riskStore, client, execClient, analysisRunID, assets, dailyLoss, weeklyLoss, drawdown, consecutiveLosses); err != nil {
-		return nil, err
-	}
-	decisions, err := store.DecisionsForRun(ctx, analysisRunID)
-	if err != nil {
-		return nil, err
-	}
-	fresh := make([]storage.Decision, 0, len(decisions))
-	for _, d := range decisions {
-		if !d.CreatedAt.Before(startedAt) {
-			fresh = append(fresh, d)
+	result := make([]Application, len(recorded))
+	for i, a := range recorded {
+		result[i] = Application{IntentID: a.IntentID, TargetID: a.TargetID, Asset: a.Asset, Side: a.Side, Quantity: a.ProposedQuantity, Value: a.ProposedValue, RiskAllowed: a.RiskAllowed, RiskReasons: a.RiskReasons, ExecutionStatus: a.ExecutionStatus}
+		if a.ExecutionOrderID != nil {
+			result[i].ExecutionOrderID = *a.ExecutionOrderID
 		}
 	}
-	return fresh, nil
-}
-
-// RunWithExecutorAndRanking mirrors RunWithExecutor for simulated execution,
-// adding committee ranking context when one was persisted for analysisRunID.
-// It is deliberately separate so RunWithDSN and real run_strategist remain on
-// the exact non-ranking path until a manual promotion is approved.
-func RunWithExecutorAndRanking(ctx context.Context, dsn string, riskStore *riskstorage.Store, execClient executor.Client, analysisRunID string, assets []string, dailyLoss, weeklyLoss, drawdown float64, consecutiveLosses int) ([]storage.Decision, error) {
-	store, err := storage.New(ctx, dsn)
-	if err != nil {
-		return nil, fmt.Errorf("connect strategist storage: %w", err)
-	}
-	defer store.Close()
-	client, err := llm.NewClient()
-	if err != nil {
-		return nil, err
-	}
-	rankings, err := store.RankingsForRun(ctx, analysisRunID)
-	if err != nil {
-		return nil, fmt.Errorf("read analysis rankings: %w", err)
-	}
-	startedAt := time.Now().UTC()
-	if err := RunWithRankings(ctx, store, riskStore, client, execClient, analysisRunID, assets, rankings, dailyLoss, weeklyLoss, drawdown, consecutiveLosses); err != nil {
-		return nil, err
-	}
-	decisions, err := store.DecisionsForRun(ctx, analysisRunID)
-	if err != nil {
-		return nil, err
-	}
-	fresh := make([]storage.Decision, 0, len(decisions))
-	for _, decision := range decisions {
-		if !decision.CreatedAt.Before(startedAt) {
-			fresh = append(fresh, decision)
-		}
-	}
-	return fresh, nil
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].IntentID+result[i].TargetID < result[j].IntentID+result[j].TargetID
+	})
+	return result, nil
 }

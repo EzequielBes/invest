@@ -4,6 +4,9 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // AgentResult is one analysis_results row (owned by the analysis module,
@@ -15,6 +18,19 @@ type AgentResult struct {
 	Asset      string
 	Indicators map[string]any
 	Narrative  string
+}
+
+// CompletedRun reports whether analysis has completed successfully.
+func (s *Store) CompletedRun(ctx context.Context, runID string) (bool, error) {
+	var status string
+	err := s.pool.QueryRow(ctx, `SELECT status FROM analysis_runs WHERE id = $1`, runID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return status == "completed", nil
 }
 
 // ResultsForRun returns every analysis_results row for runID, oldest first.

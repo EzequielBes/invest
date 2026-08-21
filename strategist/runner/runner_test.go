@@ -1,367 +1,94 @@
-// strategist/runner/runner_test.go
 package runner
 
 import (
 	"context"
-	"encoding/json"
 	"os"
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
-
 	"risk-engine/risk"
 	riskstorage "risk-engine/storage"
 
 	"execution/executor"
-
-	"strategist/internal/llm"
 	"strategist/internal/storage"
 )
 
-type fakeLLMClient struct {
-	decision llm.Decision
+type fakeExecutor struct {
+	cash  float64
+	calls int
 }
 
-func (f *fakeLLMClient) Decide(context.Context, string, string) (llm.Decision, error) {
-	return f.decision, nil
+func (f *fakeExecutor) FetchPortfolio(context.Context) (float64, map[string]float64, error) {
+	return f.cash, nil, nil
+}
+func (f *fakeExecutor) Execute(context.Context, string, risk.Side, float64, float64, string) (executor.Outcome, error) {
+	f.calls++
+	return executor.Outcome{}, nil
 }
 
-// fakeExecClient is a minimal executor.Client fake — same shape as
-// strategist/internal/strategist's fakeExecClient — so these
-// integration tests can supply a portfolio and let real executions
-// (buy/sell on approved decisions) succeed without a real exchange.
-type fakeExecClient struct {
-	cash      float64
-	positions map[string]float64
+func TestValidateRejectsInvalidIntentAndTarget(t *testing.T) {
+	strategy := StrategyContext{AnalysisRunID: "run", Rankings: []Ranking{{Asset: "BTC", Rank: 1}}}
+	if err := validate(strategy, []Intent{{ID: "intent", Asset: "ETH", Side: "buy"}}, []Target{{ID: "paper", Executor: &fakeExecutor{}}}); err == nil {
+		t.Fatal("unranked intent accepted")
+	}
+	if err := validate(strategy, []Intent{{ID: "intent", Asset: "BTC", Side: "buy"}}, []Target{{ID: "paper"}}); err == nil {
+		t.Fatal("target without executor accepted")
+	}
 }
 
-func (f *fakeExecClient) FetchPortfolio(context.Context) (float64, map[string]float64, error) {
-	return f.cash, f.positions, nil
-}
-
-func (f *fakeExecClient) Execute(_ context.Context, _ string, _ risk.Side, quantity, price float64, _ string) (executor.Outcome, error) {
-	return executor.Outcome{OrderID: "test-order", Status: "filled", FilledQuantity: quantity, FilledPrice: price}, nil
-}
-
-func testStores(t *testing.T) (*storage.Store, *riskstorage.Store) {
-	t.Helper()
+func TestApplyIntentsIsIdempotentPerTarget(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL not set, skipping integration tests")
+		t.Skip("TEST_DATABASE_URL not set, skipping integration test")
 	}
 	ctx := context.Background()
 	store, err := storage.New(ctx, dsn)
 	if err != nil {
-		t.Fatalf("storage.New: %v", err)
+		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
 	riskStore, err := riskstorage.New(ctx, dsn)
 	if err != nil {
-		t.Fatalf("riskstorage.New: %v", err)
+		t.Fatal(err)
 	}
 	t.Cleanup(riskStore.Close)
-	return store, riskStore
-}
 
-// seedAnalysisRun writes a minimal analysis_runs + analysis_results
-// fixture directly via SQL (this module never writes those tables in
-// production — they belong to the analysis module — so a test-only
-// insert here is the right way to set up a fixture, not a shortcut
-// around a missing helper).
-func seedAnalysisRun(t *testing.T, store *storage.Store, runID, asset string, includeAllThreeAgents bool) {
-	t.Helper()
-	execSQL(t, store, `INSERT INTO analysis_runs (id, started_at, timeframe, status) VALUES ($1, now(), '1h', 'completed')`, runID)
-	t.Cleanup(func() {
-		execSQLIgnoreError(store, `DELETE FROM analysis_results WHERE run_id = $1`, runID)
-		execSQLIgnoreError(store, `DELETE FROM analysis_runs WHERE id = $1`, runID)
-	})
-
-	agentTypes := []string{"technical", "derivatives", "news"}
-	if !includeAllThreeAgents {
-		agentTypes = agentTypes[:1]
-	}
-	for _, agentType := range agentTypes {
-		execSQL(t, store, `
-			INSERT INTO analysis_results (id, run_id, agent_type, asset, indicators, narrative, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6, now())
-		`, uuid.NewString(), runID, agentType, asset, jsonObj(t, map[string]any{"seeded": true}), agentType+" narrative for "+asset)
-	}
-	execSQL(t, store, `
-		INSERT INTO analysis_results (id, run_id, agent_type, asset, indicators, narrative, created_at)
-		VALUES ($1, $2, 'risk_context', '', $3, 'risk context narrative', now())
-	`, uuid.NewString(), runID, jsonObj(t, map[string]any{"risk_status": "normal"}))
-}
-
-// seedCandle inserts one candle at ts=now() and registers its own cleanup.
-// Always call this with a clearly-fake symbol (see the TESTASSET*
-// constants below), never a real one like "BTC" — this candle would
-// otherwise become the *latest* row for that symbol (ts=now()) in the
-// shared dev TimescaleDB for as long as the test is running, ahead of any
-// real collected data, and could confuse a concurrent manual run of
-// cmd/analysis or cmd/strategist against that symbol.
-func seedCandle(t *testing.T, store *storage.Store, symbol string, price float64) {
-	t.Helper()
-	execSQL(t, store, `
-		INSERT INTO candles (exchange, symbol, timeframe, ts, open, high, low, close, volume)
-		VALUES ('binance', $1, '1m', now(), $2, $2, $2, $2, 100)
-		ON CONFLICT (exchange, symbol, timeframe, ts) DO NOTHING
-	`, symbol, price)
-	t.Cleanup(func() {
-		execSQLIgnoreError(store, `DELETE FROM candles WHERE exchange = 'binance' AND symbol = $1`, symbol)
-	})
-}
-
-// seedQualityCandles creates the 1m history required by risk-engine quality
-// checks. Flat prices keep volatility at zero; quote volume exceeds the seeded
-// minimum-liquidity limit.
-func seedQualityCandles(t *testing.T, store *storage.Store, symbol string, price float64) {
-	t.Helper()
+	runID, asset := uuid.NewString(), "TESTINTENTIDEMPOTENT"
+	execSQL(t, store, `INSERT INTO analysis_runs (id, started_at, timeframe, status) VALUES ($1, now(), '1m', 'completed')`, runID)
+	execSQL(t, store, `INSERT INTO analysis_rankings (run_id, asset, rank, composite_score, opportunity_score_raw, thesis, confidence, evidence, computed_at) VALUES ($1, $2, 1, 1, 1, 'test', 1, '[]', now())`, runID, asset)
 	for i := 59; i >= 0; i-- {
-		execSQL(t, store, `
-			INSERT INTO candles (exchange, symbol, timeframe, ts, open, high, low, close, volume)
-			VALUES ('binance', $1, '1m', now() - ($2 * interval '1 minute'), $3, $3, $3, $3, 2000)
-		`, symbol, i, price)
+		execSQL(t, store, `INSERT INTO candles (exchange, symbol, timeframe, ts, open, high, low, close, volume) VALUES ('binance', $1, '1m', now() - ($2 * interval '1 minute'), 100, 100, 100, 100, 2000)`, asset, i)
 	}
 	t.Cleanup(func() {
-		execSQLIgnoreError(store, `DELETE FROM candles WHERE exchange = 'binance' AND symbol = $1 AND timeframe = '1m'`, symbol)
+		_ = storage.ExecForTest(ctx, store, `DELETE FROM strategist_intent_applications WHERE analysis_run_id = $1`, runID)
+		_ = storage.ExecForTest(ctx, store, `DELETE FROM analysis_rankings WHERE run_id = $1`, runID)
+		_ = storage.ExecForTest(ctx, store, `DELETE FROM analysis_runs WHERE id = $1`, runID)
+		_ = storage.ExecForTest(ctx, store, `DELETE FROM candles WHERE exchange = 'binance' AND symbol = $1`, asset)
 	})
+
+	paper := &fakeExecutor{cash: 10000}
+	testnet := &fakeExecutor{cash: 5000}
+	strategy := StrategyContext{AnalysisRunID: runID, Rankings: []Ranking{{Asset: asset, Rank: 1}}}
+	intents := []Intent{{ID: "stable-intent", Asset: asset, Side: "buy", Confidence: 0.8, SizingPct: 0.1}}
+	targets := []Target{{ID: "paper", Executor: paper}, {ID: "testnet", Executor: testnet}}
+	applications, err := ApplyIntentsWithDSN(ctx, dsn, riskStore, strategy, intents, targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyIntentsWithDSN(ctx, dsn, riskStore, strategy, intents, targets); err != nil {
+		t.Fatal(err)
+	}
+	if paper.calls != 1 || testnet.calls != 1 {
+		t.Fatalf("executor calls = paper %d, testnet %d; want one each", paper.calls, testnet.calls)
+	}
+	if len(applications) != 2 || applications[0].Quantity == applications[1].Quantity {
+		t.Fatalf("applications = %+v, want independently sized targets", applications)
+	}
 }
 
-// Fake asset symbols for these tests — never real ones (see seedCandle).
-const (
-	testAssetBuy        = "TESTASSETBUY"
-	testAssetHold       = "TESTASSETHOLD"
-	testAssetIncomplete = "TESTASSETINCOMPLETE"
-	testAssetApproved   = "TESTASSETAPPROVED"
-	testAssetRiskError  = "TESTASSETRISKERROR"
-)
-
-// execSQL is a tiny helper so fixtures above can run arbitrary SQL through
-// the *storage.Store without a dedicated exported method — storage.Store
-// only exposes the reads/writes production code needs, not a generic
-// query escape hatch, so tests reach the pool through this instead.
-func execSQL(t *testing.T, store *storage.Store, sql string, args ...any) {
+func execSQL(t *testing.T, store *storage.Store, query string, args ...any) {
 	t.Helper()
-	if err := storage.ExecForTest(context.Background(), store, sql, args...); err != nil {
-		t.Fatalf("seed SQL %q: %v", sql, err)
+	if err := storage.ExecForTest(context.Background(), store, query, args...); err != nil {
+		t.Fatal(err)
 	}
-}
-
-// execSQLIgnoreError is for best-effort cleanup in t.Cleanup callbacks —
-// mirrors analysis/internal/storage/runs.go's DeleteRunForTest, which
-// discards its Exec errors the same way, since a cleanup failure
-// shouldn't mask the actual test failure it ran after.
-func execSQLIgnoreError(store *storage.Store, sql string, args ...any) {
-	_ = storage.ExecForTest(context.Background(), store, sql, args...)
-}
-
-func jsonObj(t *testing.T, v any) []byte {
-	t.Helper()
-	raw, err := json.Marshal(v)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	return raw
-}
-
-func TestRun_BuyDecisionIsValidatedAndPersisted(t *testing.T) {
-	store, riskStore := testStores(t)
-	ctx := context.Background()
-	runID := uuid.NewString()
-	seedAnalysisRun(t, store, runID, testAssetBuy, true)
-	seedCandle(t, store, testAssetBuy, 50000)
-	t.Cleanup(func() {
-		store.DeleteDecisionsForRunForTest(ctx, runID)
-	})
-
-	client := &fakeLLMClient{decision: llm.Decision{Side: "buy", Confidence: 0.8, SizingPct: 0.1, Rationale: "uptrend"}}
-	if err := Run(ctx, store, riskStore, client, &fakeExecClient{cash: 10000}, runID, []string{testAssetBuy}, 0, 0, 0, 0); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	decisions, err := store.DecisionsForTest(ctx, runID)
-	if err != nil {
-		t.Fatalf("DecisionsForTest: %v", err)
-	}
-	if len(decisions) != 1 {
-		t.Fatalf("len(decisions) = %d, want 1", len(decisions))
-	}
-	d := decisions[0]
-	if d.Side != "buy" || d.Asset != testAssetBuy {
-		t.Errorf("decision = %+v, want side=buy asset=%s", d, testAssetBuy)
-	}
-	if d.RiskAllowed == nil {
-		t.Error("RiskAllowed is nil, want risk.Evaluate to have run and recorded a verdict")
-	}
-	wantQuantity := 0.1 * 10000 / 50000
-	if d.ProposedQuantity != wantQuantity {
-		t.Errorf("ProposedQuantity = %v, want %v (sizing_pct * portfolio value / price)", d.ProposedQuantity, wantQuantity)
-	}
-}
-
-func TestRun_HoldSkipsRiskEvaluateButIsPersisted(t *testing.T) {
-	store, riskStore := testStores(t)
-	ctx := context.Background()
-	runID := uuid.NewString()
-	seedAnalysisRun(t, store, runID, testAssetHold, true)
-	seedCandle(t, store, testAssetHold, 3000)
-	t.Cleanup(func() {
-		store.DeleteDecisionsForRunForTest(ctx, runID)
-	})
-
-	client := &fakeLLMClient{decision: llm.Decision{Side: "hold", Rationale: "no clear signal"}}
-	if err := Run(ctx, store, riskStore, client, &fakeExecClient{cash: 10000}, runID, []string{testAssetHold}, 0, 0, 0, 0); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	decisions, err := store.DecisionsForTest(ctx, runID)
-	if err != nil {
-		t.Fatalf("DecisionsForTest: %v", err)
-	}
-	if len(decisions) != 1 {
-		t.Fatalf("len(decisions) = %d, want 1", len(decisions))
-	}
-	if decisions[0].Side != "hold" || decisions[0].RiskAllowed != nil {
-		t.Errorf("decision = %+v, want side=hold and RiskAllowed=nil", decisions[0])
-	}
-}
-
-func TestRun_IncompleteAnalysisSkipsAssetWithoutPersisting(t *testing.T) {
-	store, riskStore := testStores(t)
-	ctx := context.Background()
-	runID := uuid.NewString()
-	seedAnalysisRun(t, store, runID, testAssetIncomplete, false) // only "technical" seeded
-	seedCandle(t, store, testAssetIncomplete, 150)
-	t.Cleanup(func() {
-		store.DeleteDecisionsForRunForTest(ctx, runID)
-	})
-
-	client := &fakeLLMClient{decision: llm.Decision{Side: "hold"}}
-	if err := Run(ctx, store, riskStore, client, &fakeExecClient{cash: 10000}, runID, []string{testAssetIncomplete}, 0, 0, 0, 0); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	decisions, err := store.DecisionsForTest(ctx, runID)
-	if err != nil {
-		t.Fatalf("DecisionsForTest: %v", err)
-	}
-	if len(decisions) != 0 {
-		t.Fatalf("len(decisions) = %d, want 0 (incomplete analysis data must not produce an implicit decision)", len(decisions))
-	}
-}
-
-func TestRun_MissingHeldPositionPriceFailsTheWholeRun(t *testing.T) {
-	store, riskStore := testStores(t)
-	ctx := context.Background()
-	runID := uuid.NewString()
-	seedAnalysisRun(t, store, runID, testAssetBuy, true)
-	seedCandle(t, store, testAssetBuy, 50000)
-	t.Cleanup(func() {
-		store.DeleteDecisionsForRunForTest(ctx, runID)
-	})
-
-	client := &fakeLLMClient{decision: llm.Decision{Side: "hold"}}
-	positions := map[string]float64{"TESTASSETNOPRICE": 1}
-	err := Run(ctx, store, riskStore, client, &fakeExecClient{cash: 10000, positions: positions}, runID, []string{testAssetBuy}, 0, 0, 0, 0)
-	if err == nil {
-		t.Fatal("expected an error when a held position has no price data, got nil")
-	}
-}
-
-func TestRun_ZeroPortfolioValueFailsTheWholeRun(t *testing.T) {
-	store, riskStore := testStores(t)
-	ctx := context.Background()
-	runID := uuid.NewString()
-	seedAnalysisRun(t, store, runID, testAssetBuy, true)
-	seedCandle(t, store, testAssetBuy, 50000)
-	t.Cleanup(func() {
-		store.DeleteDecisionsForRunForTest(ctx, runID)
-	})
-
-	client := &fakeLLMClient{decision: llm.Decision{Side: "hold"}}
-	err := Run(ctx, store, riskStore, client, &fakeExecClient{cash: 0}, runID, []string{testAssetBuy}, 0, 0, 0, 0)
-	if err == nil {
-		t.Fatal("expected an error when cash and positions are both zero/unset, got nil")
-	}
-}
-
-func TestRun_BuyDecisionCanBeApprovedAndPersisted(t *testing.T) {
-	store, riskStore := testStores(t)
-	ctx := context.Background()
-	runID := uuid.NewString()
-	seedAnalysisRun(t, store, runID, testAssetApproved, true)
-	seedCandle(t, store, testAssetApproved, 100)
-	seedQualityCandles(t, store, testAssetApproved, 100)
-	t.Cleanup(func() {
-		store.DeleteDecisionsForRunForTest(ctx, runID)
-		execSQLIgnoreError(store, `DELETE FROM risk_decisions WHERE asset = $1`, testAssetApproved)
-	})
-
-	client := &fakeLLMClient{decision: llm.Decision{Side: "buy", Confidence: 0.8, SizingPct: 0.1, Rationale: "validated setup"}}
-	if err := Run(ctx, store, riskStore, client, &fakeExecClient{cash: 10000}, runID, []string{testAssetApproved}, 0, 0, 0, 0); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	decisions, err := store.DecisionsForTest(ctx, runID)
-	if err != nil {
-		t.Fatalf("DecisionsForTest: %v", err)
-	}
-	if len(decisions) != 1 || decisions[0].RiskAllowed == nil || !*decisions[0].RiskAllowed {
-		t.Fatalf("decisions = %+v, want one risk-approved decision", decisions)
-	}
-}
-
-func TestRun_RiskEvaluationFailureStillPersistsDecision(t *testing.T) {
-	store, riskStore := testStores(t)
-	ctx := context.Background()
-	runID := uuid.NewString()
-	seedAnalysisRun(t, store, runID, testAssetRiskError, true)
-	seedCandle(t, store, testAssetRiskError, 100)
-	t.Cleanup(func() { store.DeleteDecisionsForRunForTest(ctx, runID) })
-
-	// A closed pool forces risk.Evaluate to fail after the LLM decision is made.
-	riskStore.Close()
-	client := &fakeLLMClient{decision: llm.Decision{Side: "buy", Confidence: 0.8, SizingPct: 0.1, Rationale: "keep the LLM decision"}}
-	if err := Run(ctx, store, riskStore, client, &fakeExecClient{cash: 10000}, runID, []string{testAssetRiskError}, 0, 0, 0, 0); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	decisions, err := store.DecisionsForTest(ctx, runID)
-	if err != nil {
-		t.Fatalf("DecisionsForTest: %v", err)
-	}
-	if len(decisions) != 1 || decisions[0].RiskAllowed != nil {
-		t.Fatalf("decisions = %+v, want persisted decision with RiskAllowed=nil", decisions)
-	}
-}
-
-func TestRun_UsesNewestRiskContext(t *testing.T) {
-	store, riskStore := testStores(t)
-	ctx := context.Background()
-	runID := uuid.NewString()
-	seedAnalysisRun(t, store, runID, testAssetHold, true)
-	seedCandle(t, store, testAssetHold, 100)
-	t.Cleanup(func() { store.DeleteDecisionsForRunForTest(ctx, runID) })
-	execSQL(t, store, `
-		INSERT INTO analysis_results (id, run_id, agent_type, asset, indicators, narrative, created_at)
-		VALUES ($1, $2, 'risk_context', '', $3, 'newest risk context', $4)
-	`, uuid.NewString(), runID, jsonObj(t, map[string]any{"risk_status": "paused"}), time.Now().UTC().Add(time.Second))
-
-	client := &capturingLLMClient{decision: llm.Decision{Side: "hold", Rationale: "wait"}}
-	if err := Run(ctx, store, riskStore, client, &fakeExecClient{cash: 10000}, runID, []string{testAssetHold}, 0, 0, 0, 0); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if client.userPrompt == "" || !strings.Contains(client.userPrompt, "newest risk context") {
-		t.Fatalf("prompt = %q, want newest risk context", client.userPrompt)
-	}
-}
-
-type capturingLLMClient struct {
-	decision   llm.Decision
-	userPrompt string
-}
-
-func (f *capturingLLMClient) Decide(_ context.Context, _, userPrompt string) (llm.Decision, error) {
-	f.userPrompt = userPrompt
-	return f.decision, nil
 }
