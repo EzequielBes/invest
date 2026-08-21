@@ -3,16 +3,19 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"time"
 
 	"github.com/google/uuid"
+	"risk-engine/risk"
 	riskstorage "risk-engine/storage"
 
 	"analysis/internal/agents"
 	"analysis/internal/llm"
+	"analysis/internal/ranking"
 	"analysis/internal/storage"
 )
 
@@ -33,38 +36,59 @@ func Run(ctx context.Context, store *storage.Store, riskStore *riskstorage.Store
 		}
 		return err
 	}
+	requested := make(map[string]bool, len(requestedAgents))
 	for _, agentType := range requestedAgents {
-		switch agentType {
-		case "technical":
-			for _, asset := range assets {
-				out, agentErr := agents.Technical(ctx, store, client, asset, timeframe)
-				if err := recordOne(agentType, asset, out, agentErr); err != nil {
-					return abortRun(ctx, store, runID, successCount, err)
-				}
-			}
-		case "derivatives":
-			for _, asset := range assets {
-				out, agentErr := agents.Derivatives(ctx, store, client, asset)
-				if err := recordOne(agentType, asset, out, agentErr); err != nil {
-					return abortRun(ctx, store, runID, successCount, err)
-				}
-			}
-		case "news":
-			for _, asset := range assets {
-				name := assetNames[asset]
-				if name == "" {
-					name = asset
-				}
-				out, agentErr := agents.News(ctx, store, client, asset, name)
-				if err := recordOne(agentType, asset, out, agentErr); err != nil {
-					return abortRun(ctx, store, runID, successCount, err)
-				}
-			}
-		case "risk_context":
-			out, agentErr := agents.RiskContext(ctx, riskStore, client)
-			if err := recordOne(agentType, "", out, agentErr); err != nil {
+		requested[agentType] = true
+	}
+	// Fixed stages make macro/committee independent of caller ordering and
+	// guarantee committee is the final LLM role in every cycle.
+	if requested["technical"] {
+		for _, asset := range assets {
+			out, agentErr := agents.Technical(ctx, store, client, asset, timeframe)
+			if err := recordOne("technical", asset, out, agentErr); err != nil {
 				return abortRun(ctx, store, runID, successCount, err)
 			}
+		}
+	}
+	if requested["derivatives"] {
+		for _, asset := range assets {
+			out, agentErr := agents.Derivatives(ctx, store, client, asset)
+			if err := recordOne("derivatives", asset, out, agentErr); err != nil {
+				return abortRun(ctx, store, runID, successCount, err)
+			}
+		}
+	}
+	if requested["news"] {
+		for _, asset := range assets {
+			name := assetNames[asset]
+			if name == "" {
+				name = asset
+			}
+			out, agentErr := agents.News(ctx, store, client, asset, name)
+			if err := recordOne("news", asset, out, agentErr); err != nil {
+				return abortRun(ctx, store, runID, successCount, err)
+			}
+		}
+	}
+	if requested["risk_context"] {
+		out, agentErr := agents.RiskContext(ctx, riskStore, client)
+		if err := recordOne("risk_context", "", out, agentErr); err != nil {
+			return abortRun(ctx, store, runID, successCount, err)
+		}
+	}
+	if requested["macro"] {
+		sources, sourceErr := cycleNarratives(ctx, store, runID)
+		if sourceErr != nil {
+			return abortRun(ctx, store, runID, successCount, sourceErr)
+		}
+		out, agentErr := agents.Macro(ctx, client, assets, sources)
+		if err := recordOne("macro", "", out, agentErr); err != nil {
+			return abortRun(ctx, store, runID, successCount, err)
+		}
+	}
+	if requested["committee"] {
+		if err := runCommittee(ctx, store, riskStore, client, runID, assets, recordOne, &successCount); err != nil {
+			return abortRun(ctx, store, runID, successCount, err)
 		}
 	}
 	if successCount == 0 {
@@ -74,6 +98,84 @@ func Run(ctx context.Context, store *storage.Store, riskStore *riskstorage.Store
 		return abortRun(ctx, store, runID, successCount, fmt.Errorf("finish run: %w", finishErr))
 	}
 	return runID, successCount, nil
+}
+
+func cycleNarratives(ctx context.Context, store *storage.Store, runID string) ([]agents.CycleNarrative, error) {
+	results, err := store.ResultsForRun(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("read cycle narratives: %w", err)
+	}
+	sources := make([]agents.CycleNarrative, len(results))
+	for i, result := range results {
+		sources[i] = agents.CycleNarrative{AgentType: result.AgentType, Asset: result.Asset, Narrative: result.Narrative}
+	}
+	return sources, nil
+}
+
+func runCommittee(ctx context.Context, store *storage.Store, riskStore *riskstorage.Store, client llm.Client, runID string, assets []string, recordOne func(string, string, agents.Output, error) error, successCount *int) error {
+	sources, err := cycleNarratives(ctx, store, runID)
+	if err != nil {
+		return err
+	}
+	assessments, err := agents.Committee(ctx, client, assets, sources)
+	if err != nil {
+		// Committee failures are intentionally isolated like every existing
+		// analysis agent: prior analysis stays usable without a ranking.
+		fmt.Fprintf(os.Stderr, "committee: %v\n", err)
+		return nil
+	}
+	inputs := make([]ranking.Input, 0, len(assessments))
+	persisted := make(map[string]agents.CommitteeAssessment, len(assessments))
+	for _, assessment := range assessments {
+		indicators := agents.CommitteeIndicators{
+			Thesis: assessment.Thesis, Confidence: assessment.Confidence, OpportunityScore: assessment.OpportunityScore,
+			Evidence: assessment.Evidence,
+		}
+		quality, found, qualityErr := store.QualityForRanking(ctx, risk.ReferenceExchange, assessment.Asset)
+		if qualityErr != nil {
+			fmt.Fprintf(os.Stderr, "committee/%s: data quality failed: %v\n", assessment.Asset, qualityErr)
+		}
+		if qualityErr == nil && found {
+			indicators.Quality = quality
+		} else if qualityErr == nil {
+			fmt.Fprintf(os.Stderr, "committee/%s: insufficient 1m data quality window, skipping ranking\n", assessment.Asset)
+		}
+		if err := recordOne("committee", assessment.Asset, agents.Output{Indicators: indicators, Narrative: assessment.Narrative}, nil); err != nil {
+			return err
+		}
+		*successCount = *successCount + 1
+		if qualityErr != nil || !found {
+			continue
+		}
+		inputs = append(inputs, ranking.Input{Asset: assessment.Asset, OpportunityScore: assessment.OpportunityScore, DataAgeMinutes: quality.DataAgeMinutes, Liquidity: quality.Liquidity, Volatility: quality.Volatility})
+		persisted[assessment.Asset] = assessment
+	}
+	if len(inputs) == 0 {
+		return nil
+	}
+	limits, err := riskStore.GetLimits(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "committee: read risk limits failed: %v\n", err)
+		return nil
+	}
+	computed, err := ranking.Compute(inputs, ranking.Limits{MaxDataAgeMinutes: limits.MaxDataAgeMinutes, MinLiquidity: limits.MinLiquidity, MaxVolatility: limits.MaxVolatility})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "committee: compute ranking failed: %v\n", err)
+		return nil
+	}
+	rankings := make([]storage.Ranking, 0, len(computed))
+	for _, result := range computed {
+		assessment := persisted[result.Asset]
+		evidence, marshalErr := json.Marshal(assessment.Evidence)
+		if marshalErr != nil {
+			return fmt.Errorf("marshal committee evidence: %w", marshalErr)
+		}
+		rankings = append(rankings, storage.Ranking{RunID: runID, Asset: result.Asset, Rank: result.Rank, CompositeScore: result.CompositeScore, OpportunityScoreRaw: assessment.OpportunityScore, Thesis: assessment.Thesis, Confidence: assessment.Confidence, Evidence: evidence, ComputedAt: time.Now().UTC()})
+	}
+	if err := store.SaveRankings(ctx, rankings); err != nil {
+		return fmt.Errorf("save rankings: %w", err)
+	}
+	return nil
 }
 
 type resultSaver interface {

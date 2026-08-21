@@ -40,6 +40,39 @@ func Run(
 	dailyLoss, weeklyLoss, drawdown float64,
 	consecutiveLosses int,
 ) error {
+	return run(ctx, store, riskStore, client, execClient, runID, assets, nil, dailyLoss, weeklyLoss, drawdown, consecutiveLosses)
+}
+
+// RunWithRankings is the paper-only counterpart to Run. Rankings are read by
+// this module from analysis's table and only change prompts for assets that
+// actually have a ranking; old runs fall back to Run's established prompt.
+func RunWithRankings(
+	ctx context.Context,
+	store *storage.Store,
+	riskStore *riskstorage.Store,
+	client llm.Client,
+	execClient executor.Client,
+	runID string,
+	assets []string,
+	rankings []storage.Ranking,
+	dailyLoss, weeklyLoss, drawdown float64,
+	consecutiveLosses int,
+) error {
+	return run(ctx, store, riskStore, client, execClient, runID, assets, rankings, dailyLoss, weeklyLoss, drawdown, consecutiveLosses)
+}
+
+func run(
+	ctx context.Context,
+	store *storage.Store,
+	riskStore *riskstorage.Store,
+	client llm.Client,
+	execClient executor.Client,
+	runID string,
+	assets []string,
+	rankings []storage.Ranking,
+	dailyLoss, weeklyLoss, drawdown float64,
+	consecutiveLosses int,
+) error {
 	results, err := store.ResultsForRun(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("read analysis results: %w", err)
@@ -75,7 +108,12 @@ func Run(
 		}
 
 		decisionID := uuid.NewString()
-		outcome, err := strategist.Decide(ctx, riskStore, client, execClient, decisionID, asset, byAsset[asset], riskContext, portfolio, portfolioValue, price)
+		var outcome strategist.Outcome
+		if len(rankings) == 0 {
+			outcome, err = strategist.Decide(ctx, riskStore, client, execClient, decisionID, asset, byAsset[asset], riskContext, portfolio, portfolioValue, price)
+		} else {
+			outcome, err = strategist.DecideWithRanking(ctx, riskStore, client, execClient, decisionID, asset, byAsset[asset], riskContext, rankings, portfolio, portfolioValue, price)
+		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", asset, err)
 			continue
@@ -220,6 +258,41 @@ func RunWithExecutor(ctx context.Context, dsn string, riskStore *riskstorage.Sto
 	for _, d := range decisions {
 		if !d.CreatedAt.Before(startedAt) {
 			fresh = append(fresh, d)
+		}
+	}
+	return fresh, nil
+}
+
+// RunWithExecutorAndRanking mirrors RunWithExecutor for simulated execution,
+// adding committee ranking context when one was persisted for analysisRunID.
+// It is deliberately separate so RunWithDSN and real run_strategist remain on
+// the exact non-ranking path until a manual promotion is approved.
+func RunWithExecutorAndRanking(ctx context.Context, dsn string, riskStore *riskstorage.Store, execClient executor.Client, analysisRunID string, assets []string, dailyLoss, weeklyLoss, drawdown float64, consecutiveLosses int) ([]storage.Decision, error) {
+	store, err := storage.New(ctx, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("connect strategist storage: %w", err)
+	}
+	defer store.Close()
+	client, err := llm.NewClient()
+	if err != nil {
+		return nil, err
+	}
+	rankings, err := store.RankingsForRun(ctx, analysisRunID)
+	if err != nil {
+		return nil, fmt.Errorf("read analysis rankings: %w", err)
+	}
+	startedAt := time.Now().UTC()
+	if err := RunWithRankings(ctx, store, riskStore, client, execClient, analysisRunID, assets, rankings, dailyLoss, weeklyLoss, drawdown, consecutiveLosses); err != nil {
+		return nil, err
+	}
+	decisions, err := store.DecisionsForRun(ctx, analysisRunID)
+	if err != nil {
+		return nil, err
+	}
+	fresh := make([]storage.Decision, 0, len(decisions))
+	for _, decision := range decisions {
+		if !decision.CreatedAt.Before(startedAt) {
+			fresh = append(fresh, decision)
 		}
 	}
 	return fresh, nil

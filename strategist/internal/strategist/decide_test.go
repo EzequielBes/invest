@@ -47,9 +47,45 @@ func TestBuildPrompt_IncludesAllThreeAgentsAndRiskContext(t *testing.T) {
 	}
 }
 
+func TestBuildPromptWithRanking_AppendsRelativeContext(t *testing.T) {
+	prompt, err := buildPromptWithRanking("BTC", validPerAsset(), storage.AgentResult{}, []storage.Ranking{
+		{Asset: "BTC", Rank: 1, CompositeScore: 0.8, Thesis: "bull", Confidence: 0.7},
+		{Asset: "ETH", Rank: 2, CompositeScore: 0.6, Thesis: "neutro", Confidence: 0.5},
+	})
+	if err != nil {
+		t.Fatalf("buildPromptWithRanking: %v", err)
+	}
+	for _, want := range []string{"[ranking]", "Posição do ativo: 1", "1. BTC", "2. ETH"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestDecideWithRanking_WithoutCurrentRankingUsesExistingPrompt(t *testing.T) {
+	client := &capturingLLMClient{decision: llm.Decision{Side: "hold"}}
+	_, err := DecideWithRanking(context.Background(), nil, client, nil, "decision-1", "BTC", validPerAsset(), storage.AgentResult{}, []storage.Ranking{{Asset: "ETH", Rank: 1}}, riskPortfolioState(), 10000, 100)
+	if err != nil {
+		t.Fatalf("DecideWithRanking: %v", err)
+	}
+	if strings.Contains(client.prompt, "[ranking]") {
+		t.Fatalf("fallback prompt unexpectedly contains ranking: %s", client.prompt)
+	}
+}
+
 type fakeLLMClient struct {
 	decision llm.Decision
 	err      error
+}
+
+type capturingLLMClient struct {
+	decision llm.Decision
+	prompt   string
+}
+
+func (f *capturingLLMClient) Decide(_ context.Context, _ string, prompt string) (llm.Decision, error) {
+	f.prompt = prompt
+	return f.decision, nil
 }
 
 func (f *fakeLLMClient) Decide(context.Context, string, string) (llm.Decision, error) {

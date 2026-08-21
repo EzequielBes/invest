@@ -16,13 +16,13 @@ import (
 	"analysis/runner"
 )
 
-var validAgents = map[string]bool{"technical": true, "derivatives": true, "news": true, "risk_context": true}
+var validAgents = map[string]bool{"technical": true, "derivatives": true, "news": true, "risk_context": true, "macro": true, "committee": true}
 
 func main() {
 	assets := flag.String("assets", "", "comma-separated asset symbols on the reference exchange (required)")
 	assetNames := flag.String("asset-names", "", "optional comma-separated SYMBOL=Full Name mappings used by the news agent")
 	timeframe := flag.String("timeframe", "1h", "timeframe used by the technical agent")
-	agentsFlag := flag.String("agents", "technical,derivatives,news,risk_context", "comma-separated agents to run")
+	agentsFlag := flag.String("agents", "technical,derivatives,news,risk_context,macro,committee", "comma-separated agents to run")
 	flag.Parse()
 	if err := run(context.Background(), *assets, *assetNames, *timeframe, *agentsFlag); err != nil {
 		log.Fatal(err)
@@ -40,7 +40,7 @@ func run(ctx context.Context, assetsStr, assetNamesStr, timeframe, agentsStr str
 	}
 	for _, agentType := range requestedAgents {
 		if !validAgents[agentType] {
-			return fmt.Errorf("unknown agent %q (valid: technical, derivatives, news, risk_context)", agentType)
+			return fmt.Errorf("unknown agent %q (valid: technical, derivatives, news, risk_context, macro, committee)", agentType)
 		}
 	}
 	assetNames, err := parseAssetNames(assetNamesStr)

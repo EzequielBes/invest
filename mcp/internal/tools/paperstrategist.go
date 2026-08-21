@@ -24,10 +24,9 @@ type RunPaperStrategistArgs struct {
 	ConsecutiveLosses int      `json:"consecutive_losses,omitempty" jsonschema:"number of consecutive simulated losing trades"`
 }
 
-// RunPaperStrategist runs the exact same decision pipeline as
-// run_strategist — real analysis results, real LLM call, real
-// risk-engine validation — but fills approved trades against
-// execution/paperexec's simulated ledger instead of the Binance testnet.
+// RunPaperStrategist runs the simulated decision pipeline. It adds the
+// deterministic committee ranking to prompts when an analysis run has one,
+// while deliberately leaving run_strategist's real path untouched.
 // Refuses to run when simulation is turned off (see set_simulation_enabled)
 // so no LLM call is spent on a cycle nobody asked for.
 func RunPaperStrategist(ctx context.Context, dsn string, riskStore *riskstorage.Store, paperStore *paperstore.Store, args RunPaperStrategistArgs) (RunStrategistResult, error) {
@@ -51,7 +50,7 @@ func RunPaperStrategist(ctx context.Context, dsn string, riskStore *riskstorage.
 	}
 	defer execClient.Close()
 
-	decisions, err := runner.RunWithExecutor(ctx, dsn, riskStore, execClient, args.AnalysisRunID, args.Assets, args.DailyLoss, args.WeeklyLoss, args.Drawdown, args.ConsecutiveLosses)
+	decisions, err := runner.RunWithExecutorAndRanking(ctx, dsn, riskStore, execClient, args.AnalysisRunID, args.Assets, args.DailyLoss, args.WeeklyLoss, args.Drawdown, args.ConsecutiveLosses)
 	if err != nil {
 		return RunStrategistResult{}, err
 	}

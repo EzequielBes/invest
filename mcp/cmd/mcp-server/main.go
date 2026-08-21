@@ -78,7 +78,7 @@ func newServer(store *storage.Store, riskStore *riskstorage.Store, paperStore *p
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "run_analysis",
-		Description: "Run the analysis pipeline (technical, derivatives, news, risk-context agents) for one or more assets, producing an analysis_run_id for run_strategist to consume.",
+		Description: "Run the analysis pipeline (technical, derivatives, news, risk-context, macro, and committee agents) for one or more assets. The committee produces an auditable deterministic opportunity ranking for paper trading.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.RunAnalysisArgs) (*mcp.CallToolResult, tools.RunAnalysisResult, error) {
 		result, err := tools.RunAnalysis(ctx, dsn, riskStore, args)
 		return nil, result, err
@@ -118,7 +118,7 @@ func newServer(store *storage.Store, riskStore *riskstorage.Store, paperStore *p
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "run_paper_strategist",
-		Description: "Runs the exact same strategist pipeline as run_strategist (real LLM decision, real risk-engine validation) from an existing analysis_run_id, but fills approved trades against a simulated portfolio instead of the real Binance testnet account. Use this to validate decision accuracy over time before trusting run_strategist with real execution. Requires simulation to be enabled via set_simulation_enabled.",
+		Description: "Runs the simulated strategist pipeline from an existing analysis_run_id. When available, it adds the analysis committee's deterministic ranking to the LLM context; run_strategist real is not affected. Approved trades fill against the simulated portfolio and still pass the real risk-engine. Requires simulation to be enabled via set_simulation_enabled.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.RunPaperStrategistArgs) (*mcp.CallToolResult, tools.RunStrategistResult, error) {
 		result, err := tools.RunPaperStrategist(ctx, dsn, riskStore, paperStore, args)
 		return nil, result, err

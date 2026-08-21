@@ -4,6 +4,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -14,6 +15,60 @@ type Candle struct {
 	Time   time.Time
 	Close  float64
 	Volume float64
+}
+
+// QualitySnapshot is the exact set of market-data measurements used by the
+// opportunity ranking. It mirrors risk-engine's 1m, 60-candle quality
+// window, while keeping analysis independent of risk-engine internals.
+type QualitySnapshot struct {
+	DataAgeMinutes float64 `json:"data_age_minutes"`
+	Liquidity      float64 `json:"liquidity"`
+	Volatility     float64 `json:"volatility"`
+}
+
+// QualityForRanking reads the same 1m candle window used by the risk-engine
+// quality rules. found is false unless enough data exists to measure both
+// liquidity and volatility.
+func (s *Store) QualityForRanking(ctx context.Context, exchange, symbol string) (snapshot QualitySnapshot, found bool, err error) {
+	candles, err := s.RecentCandles(ctx, exchange, symbol, "1m", 60)
+	if err != nil {
+		return QualitySnapshot{}, false, err
+	}
+	if len(candles) < 2 {
+		return QualitySnapshot{}, false, nil
+	}
+	var liquidity float64
+	for _, candle := range candles {
+		liquidity += candle.Volume * candle.Close
+	}
+	if liquidity <= 0 {
+		return QualitySnapshot{}, false, nil
+	}
+	returns := make([]float64, 0, len(candles)-1)
+	for i := 1; i < len(candles); i++ {
+		if candles[i-1].Close == 0 {
+			continue
+		}
+		returns = append(returns, (candles[i].Close-candles[i-1].Close)/candles[i-1].Close)
+	}
+	if len(returns) == 0 {
+		return QualitySnapshot{}, false, nil
+	}
+	var mean float64
+	for _, value := range returns {
+		mean += value
+	}
+	mean /= float64(len(returns))
+	var variance float64
+	for _, value := range returns {
+		variance += (value - mean) * (value - mean)
+	}
+	variance /= float64(len(returns))
+	age := time.Since(candles[len(candles)-1].Time).Minutes()
+	if age < 0 {
+		age = 0
+	}
+	return QualitySnapshot{DataAgeMinutes: age, Liquidity: liquidity, Volatility: math.Sqrt(variance)}, true, nil
 }
 
 // RecentCandles returns the last n closed candles for exchange/symbol/

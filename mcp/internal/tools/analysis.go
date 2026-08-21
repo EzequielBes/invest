@@ -11,13 +11,13 @@ import (
 	"analysis/runner"
 )
 
-var validAnalysisAgents = map[string]bool{"technical": true, "derivatives": true, "news": true, "risk_context": true}
+var validAnalysisAgents = map[string]bool{"technical": true, "derivatives": true, "news": true, "risk_context": true, "macro": true, "committee": true}
 
 // RunAnalysisArgs is the run_analysis tool's input.
 type RunAnalysisArgs struct {
 	Assets     []string          `json:"assets" jsonschema:"asset symbols to analyze, on the reference exchange"`
 	Timeframe  string            `json:"timeframe,omitempty" jsonschema:"timeframe used by the technical agent, defaults to 1h"`
-	Agents     []string          `json:"agents,omitempty" jsonschema:"which agents to run: technical, derivatives, news, risk_context — defaults to all four"`
+	Agents     []string          `json:"agents,omitempty" jsonschema:"which agents to run: technical, derivatives, news, risk_context, macro, committee — defaults to all six"`
 	AssetNames map[string]string `json:"asset_names,omitempty" jsonschema:"optional symbol to full name mapping used by the news agent, e.g. {\"BTC\": \"Bitcoin\"}"`
 }
 
@@ -50,11 +50,11 @@ func RunAnalysis(ctx context.Context, dsn string, riskStore *riskstorage.Store, 
 	}
 	agents := args.Agents
 	if len(agents) == 0 {
-		agents = []string{"technical", "derivatives", "news", "risk_context"}
+		agents = []string{"technical", "derivatives", "news", "risk_context", "macro", "committee"}
 	}
 	for _, agentType := range agents {
 		if !validAnalysisAgents[agentType] {
-			return RunAnalysisResult{}, fmt.Errorf("unknown agent %q (valid: technical, derivatives, news, risk_context)", agentType)
+			return RunAnalysisResult{}, fmt.Errorf("unknown agent %q (valid: technical, derivatives, news, risk_context, macro, committee)", agentType)
 		}
 	}
 	timeframe := args.Timeframe

@@ -67,6 +67,44 @@ func Decide(
 	if err != nil {
 		return Outcome{}, err
 	}
+	return decideWithPrompt(ctx, riskStore, llmClient, execClient, decisionID, asset, userPrompt, portfolio, portfolioValue, price)
+}
+
+// DecideWithRanking is the paper-only variation of Decide. When a ranking is
+// unavailable for asset, it deliberately delegates to Decide so its prompt is
+// byte-for-byte the established non-ranking prompt.
+func DecideWithRanking(
+	ctx context.Context,
+	riskStore *riskstorage.Store,
+	llmClient llm.Client,
+	execClient executor.Client,
+	decisionID string,
+	asset string,
+	perAsset []storage.AgentResult,
+	riskContext storage.AgentResult,
+	rankings []storage.Ranking,
+	portfolio risk.PortfolioState,
+	portfolioValue, price float64,
+) (Outcome, error) {
+	if !hasRanking(asset, rankings) {
+		return Decide(ctx, riskStore, llmClient, execClient, decisionID, asset, perAsset, riskContext, portfolio, portfolioValue, price)
+	}
+	userPrompt, err := buildPromptWithRanking(asset, perAsset, riskContext, rankings)
+	if err != nil {
+		return Outcome{}, err
+	}
+	return decideWithPrompt(ctx, riskStore, llmClient, execClient, decisionID, asset, userPrompt, portfolio, portfolioValue, price)
+}
+
+func decideWithPrompt(
+	ctx context.Context,
+	riskStore *riskstorage.Store,
+	llmClient llm.Client,
+	execClient executor.Client,
+	decisionID, asset, userPrompt string,
+	portfolio risk.PortfolioState,
+	portfolioValue, price float64,
+) (Outcome, error) {
 
 	decision, err := llmClient.Decide(ctx, systemPrompt, userPrompt)
 	if err != nil {
@@ -136,6 +174,39 @@ func buildPrompt(asset string, perAsset []storage.AgentResult, riskContext stora
 	}
 	fmt.Fprintf(&sb, "[risk_context]\nIndicadores: %s\nNarrativa: %s\n", formatIndicators(riskContext.Indicators), riskContext.Narrative)
 	return sb.String(), nil
+}
+
+func buildPromptWithRanking(asset string, perAsset []storage.AgentResult, riskContext storage.AgentResult, rankings []storage.Ranking) (string, error) {
+	prompt, err := buildPrompt(asset, perAsset, riskContext)
+	if err != nil {
+		return "", err
+	}
+	var current storage.Ranking
+	for _, ranking := range rankings {
+		if ranking.Asset == asset {
+			current = ranking
+			break
+		}
+	}
+	if current.Asset == "" {
+		return prompt, nil
+	}
+	var sb strings.Builder
+	sb.WriteString(prompt)
+	fmt.Fprintf(&sb, "\n[ranking]\nPosição do ativo: %d\nScore composto: %.6f\nTese do comitê: %s\nConfiança do comitê: %.2f\nRanking do ciclo:\n", current.Rank, current.CompositeScore, current.Thesis, current.Confidence)
+	for _, ranking := range rankings {
+		fmt.Fprintf(&sb, "%d. %s — score %.6f, tese %s\n", ranking.Rank, ranking.Asset, ranking.CompositeScore, ranking.Thesis)
+	}
+	return sb.String(), nil
+}
+
+func hasRanking(asset string, rankings []storage.Ranking) bool {
+	for _, ranking := range rankings {
+		if ranking.Asset == asset {
+			return true
+		}
+	}
+	return false
 }
 
 func formatIndicators(indicators map[string]any) string {

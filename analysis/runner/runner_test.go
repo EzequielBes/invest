@@ -140,10 +140,45 @@ func TestRun_PartialLLMFailureStillCompletes(t *testing.T) {
 	}
 }
 
+func TestRun_CycleAgentsRunInFixedOrderAndCommitteeFailureIsIsolated(t *testing.T) {
+	store, riskStore := testStores(t)
+	ctx := context.Background()
+	client := &committeeFakeLLMClient{}
+	runID, successCount, err := Run(ctx, store, riskStore, client, []string{"NOSUCHASSET"}, nil, "1h", []string{"committee", "macro", "news", "risk_context", "derivatives", "technical"})
+	t.Cleanup(func() { store.DeleteRunForTest(ctx, runID) })
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if successCount != 5 {
+		t.Errorf("successCount = %d, want 5 (committee failure is isolated)", successCount)
+	}
+	results, err := store.ResultsForTest(ctx, runID)
+	if err != nil {
+		t.Fatalf("ResultsForTest: %v", err)
+	}
+	gotOrder := make([]string, len(results))
+	for i, result := range results {
+		gotOrder[i] = result.AgentType
+	}
+	wantOrder := []string{"technical", "derivatives", "news", "risk_context", "macro"}
+	if strings.Join(gotOrder, ",") != strings.Join(wantOrder, ",") {
+		t.Errorf("result order = %v, want %v", gotOrder, wantOrder)
+	}
+}
+
 type selectiveFakeLLMClient struct{}
 
 func (*selectiveFakeLLMClient) Summarize(_ context.Context, systemPrompt, _ string) (string, error) {
 	if strings.Contains(systemPrompt, "notícias") {
+		return "", errFakeLLMFailure
+	}
+	return "fake narrative", nil
+}
+
+type committeeFakeLLMClient struct{}
+
+func (*committeeFakeLLMClient) Summarize(_ context.Context, systemPrompt, _ string) (string, error) {
+	if strings.Contains(systemPrompt, "chefe de mesa") {
 		return "", errFakeLLMFailure
 	}
 	return "fake narrative", nil
