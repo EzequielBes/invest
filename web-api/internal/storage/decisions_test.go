@@ -82,6 +82,40 @@ func TestRecentDecisions_ExcludesPaperDecisions(t *testing.T) {
 	}
 }
 
+func TestRecentDecisions_SeparatesIntentApplicationsByTarget(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	runID := testID(t, "application-run")
+	testnetID := testID(t, "application-testnet")
+	paperHoldID := testID(t, "application-paper-hold")
+	paperRejectedID := testID(t, "application-paper-rejected")
+
+	seedIntentApplication(t, store, testnetID, runID, "testnet", "buy", "filled")
+	seedIntentApplication(t, store, paperHoldID, runID, "paper", "hold", "not_applicable")
+	seedIntentApplication(t, store, paperRejectedID, runID, "paper", "buy", "rejected")
+	t.Cleanup(func() {
+		for _, id := range []string{testnetID, paperHoldID, paperRejectedID} {
+			_, _ = store.pool.Exec(context.Background(), `DELETE FROM strategist_intent_applications WHERE analysis_run_id = $1 AND intent_id = $2`, runID, id)
+		}
+	})
+
+	real, err := store.RecentDecisions(ctx, 50)
+	if err != nil {
+		t.Fatalf("RecentDecisions: %v", err)
+	}
+	if !containsDecision(real, testnetID) || containsDecision(real, paperHoldID) || containsDecision(real, paperRejectedID) {
+		t.Fatalf("real decisions = %+v, want only the testnet application", real)
+	}
+
+	paper, err := store.RecentPaperDecisions(ctx, 50)
+	if err != nil {
+		t.Fatalf("RecentPaperDecisions: %v", err)
+	}
+	if containsDecision(paper, testnetID) || !containsDecision(paper, paperHoldID) || !containsDecision(paper, paperRejectedID) {
+		t.Fatalf("paper decisions = %+v, want hold and rejected paper applications", paper)
+	}
+}
+
 func TestRecentDecisions_NoRowsReturnsEmptySliceNotNil(t *testing.T) {
 	store := testStore(t)
 
@@ -135,4 +169,26 @@ func deleteDecisionForTest(t *testing.T, store *Store, id string) {
 	if _, err := store.pool.Exec(context.Background(), `DELETE FROM strategist_decisions WHERE id = $1`, id); err != nil {
 		t.Errorf("cleanup decision %s: %v", id, err)
 	}
+}
+
+func seedIntentApplication(t *testing.T, store *Store, intentID, runID, targetID, side, status string) {
+	t.Helper()
+	_, err := store.pool.Exec(context.Background(), `
+		INSERT INTO strategist_intent_applications
+			(intent_id, target_id, analysis_run_id, asset, side, confidence, sizing_pct, rationale,
+			 proposed_quantity, proposed_value, risk_reasons, execution_status, created_at)
+		VALUES ($1, $2, $3, 'BTC', $4, 0.8, 0.1, 'test', 1, 100, '[]', $5, now())
+	`, intentID, targetID, runID, side, status)
+	if err != nil {
+		t.Fatalf("seedIntentApplication: %v", err)
+	}
+}
+
+func containsDecision(decisions []Decision, id string) bool {
+	for _, decision := range decisions {
+		if decision.ID == id {
+			return true
+		}
+	}
+	return false
 }

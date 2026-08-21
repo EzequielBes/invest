@@ -53,16 +53,21 @@ func TestApplyIntentsIsIdempotentPerTarget(t *testing.T) {
 	}
 	t.Cleanup(riskStore.Close)
 
-	runID, asset := uuid.NewString(), "TESTINTENTIDEMPOTENT"
+	runID, secondRunID, asset := uuid.NewString(), uuid.NewString(), "TESTINTENTIDEMPOTENT"
 	execSQL(t, store, `INSERT INTO analysis_runs (id, started_at, timeframe, status) VALUES ($1, now(), '1m', 'completed')`, runID)
 	execSQL(t, store, `INSERT INTO analysis_rankings (run_id, asset, rank, composite_score, opportunity_score_raw, thesis, confidence, evidence, computed_at) VALUES ($1, $2, 1, 1, 1, 'test', 1, '[]', now())`, runID, asset)
+	execSQL(t, store, `INSERT INTO analysis_runs (id, started_at, timeframe, status) VALUES ($1, now(), '1m', 'completed')`, secondRunID)
+	execSQL(t, store, `INSERT INTO analysis_rankings (run_id, asset, rank, composite_score, opportunity_score_raw, thesis, confidence, evidence, computed_at) VALUES ($1, $2, 1, 1, 1, 'test', 1, '[]', now())`, secondRunID, asset)
 	for i := 59; i >= 0; i-- {
 		execSQL(t, store, `INSERT INTO candles (exchange, symbol, timeframe, ts, open, high, low, close, volume) VALUES ('binance', $1, '1m', now() - ($2 * interval '1 minute'), 100, 100, 100, 100, 2000)`, asset, i)
 	}
 	t.Cleanup(func() {
 		_ = storage.ExecForTest(ctx, store, `DELETE FROM strategist_intent_applications WHERE analysis_run_id = $1`, runID)
+		_ = storage.ExecForTest(ctx, store, `DELETE FROM strategist_intent_applications WHERE analysis_run_id = $1`, secondRunID)
 		_ = storage.ExecForTest(ctx, store, `DELETE FROM analysis_rankings WHERE run_id = $1`, runID)
+		_ = storage.ExecForTest(ctx, store, `DELETE FROM analysis_rankings WHERE run_id = $1`, secondRunID)
 		_ = storage.ExecForTest(ctx, store, `DELETE FROM analysis_runs WHERE id = $1`, runID)
+		_ = storage.ExecForTest(ctx, store, `DELETE FROM analysis_runs WHERE id = $1`, secondRunID)
 		_ = storage.ExecForTest(ctx, store, `DELETE FROM candles WHERE exchange = 'binance' AND symbol = $1`, asset)
 	})
 
@@ -78,11 +83,18 @@ func TestApplyIntentsIsIdempotentPerTarget(t *testing.T) {
 	if _, err := ApplyIntentsWithDSN(ctx, dsn, riskStore, strategy, intents, targets); err != nil {
 		t.Fatal(err)
 	}
-	if paper.calls != 1 || testnet.calls != 1 {
-		t.Fatalf("executor calls = paper %d, testnet %d; want one each", paper.calls, testnet.calls)
+	secondApplications, err := ApplyIntentsWithDSN(ctx, dsn, riskStore, StrategyContext{AnalysisRunID: secondRunID}, intents, targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paper.calls != 2 || testnet.calls != 2 {
+		t.Fatalf("executor calls = paper %d, testnet %d; want two each across runs", paper.calls, testnet.calls)
 	}
 	if len(applications) != 2 || applications[0].Quantity == applications[1].Quantity {
 		t.Fatalf("applications = %+v, want independently sized targets", applications)
+	}
+	if len(secondApplications) != 2 {
+		t.Fatalf("second applications = %+v, want only the second run's records", secondApplications)
 	}
 }
 

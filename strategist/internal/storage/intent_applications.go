@@ -7,7 +7,8 @@ import (
 )
 
 // IntentApplication records one intent's result for one executor target.
-// The (IntentID, TargetID) key makes retries safe per target.
+// The (AnalysisRunID, IntentID, TargetID) key makes retries safe per target
+// without suppressing the same stable intent in a later analysis run.
 type IntentApplication struct {
 	IntentID                string
 	TargetID                string
@@ -29,7 +30,7 @@ type IntentApplication struct {
 }
 
 // CreateIntentApplication reserves an intent for a target before any order is
-// sent. false means a prior attempt already owns the stable pair.
+// sent. false means a prior attempt already owns the stable run/target pair.
 func (s *Store) CreateIntentApplication(ctx context.Context, a IntentApplication) (bool, error) {
 	reasons := a.RiskReasons
 	if reasons == nil {
@@ -44,7 +45,7 @@ func (s *Store) CreateIntentApplication(ctx context.Context, a IntentApplication
 			(intent_id, target_id, analysis_run_id, asset, side, confidence, sizing_pct, rationale,
 			 proposed_quantity, proposed_value, risk_allowed, risk_reasons, execution_status, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-		ON CONFLICT (intent_id, target_id) DO NOTHING
+		ON CONFLICT (analysis_run_id, intent_id, target_id) DO NOTHING
 	`, a.IntentID, a.TargetID, a.AnalysisRunID, a.Asset, a.Side, a.Confidence, a.SizingPct, a.Rationale,
 		a.ProposedQuantity, a.ProposedValue, a.RiskAllowed, raw, a.ExecutionStatus, a.CreatedAt)
 	if err != nil {
@@ -53,16 +54,16 @@ func (s *Store) CreateIntentApplication(ctx context.Context, a IntentApplication
 	return result.RowsAffected() == 1, nil
 }
 
-func (s *Store) CompleteIntentApplication(ctx context.Context, intentID, targetID, status string, orderID *string, quantity, price *float64) error {
+func (s *Store) CompleteIntentApplication(ctx context.Context, analysisRunID, intentID, targetID, status string, orderID *string, quantity, price *float64) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE strategist_intent_applications
-		SET execution_status = $3, execution_order_id = $4, execution_filled_quantity = $5, execution_filled_price = $6
-		WHERE intent_id = $1 AND target_id = $2
-	`, intentID, targetID, status, orderID, quantity, price)
+		SET execution_status = $4, execution_order_id = $5, execution_filled_quantity = $6, execution_filled_price = $7
+		WHERE analysis_run_id = $1 AND intent_id = $2 AND target_id = $3
+	`, analysisRunID, intentID, targetID, status, orderID, quantity, price)
 	return err
 }
 
-func (s *Store) SetIntentApplicationRisk(ctx context.Context, intentID, targetID, status string, allowed *bool, reasons []string) error {
+func (s *Store) SetIntentApplicationRisk(ctx context.Context, analysisRunID, intentID, targetID, status string, allowed *bool, reasons []string) error {
 	if reasons == nil {
 		reasons = []string{}
 	}
@@ -72,19 +73,21 @@ func (s *Store) SetIntentApplicationRisk(ctx context.Context, intentID, targetID
 	}
 	_, err = s.pool.Exec(ctx, `
 		UPDATE strategist_intent_applications
-		SET execution_status = $3, risk_allowed = $4, risk_reasons = $5
-		WHERE intent_id = $1 AND target_id = $2
-	`, intentID, targetID, status, allowed, raw)
+		SET execution_status = $4, risk_allowed = $5, risk_reasons = $6
+		WHERE analysis_run_id = $1 AND intent_id = $2 AND target_id = $3
+	`, analysisRunID, intentID, targetID, status, allowed, raw)
 	return err
 }
 
-func (s *Store) IntentApplications(ctx context.Context, intentIDs []string) ([]IntentApplication, error) {
+func (s *Store) IntentApplications(ctx context.Context, analysisRunID string, intentIDs []string) ([]IntentApplication, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT intent_id, target_id, analysis_run_id, asset, side, confidence, sizing_pct, rationale,
 		       proposed_quantity, proposed_value, risk_allowed, risk_reasons, execution_status,
 		       execution_order_id, execution_filled_quantity, execution_filled_price, created_at
-		FROM strategist_intent_applications WHERE intent_id = ANY($1) ORDER BY created_at, intent_id, target_id
-	`, intentIDs)
+		FROM strategist_intent_applications
+		WHERE analysis_run_id = $1 AND intent_id = ANY($2)
+		ORDER BY created_at, intent_id, target_id
+	`, analysisRunID, intentIDs)
 	if err != nil {
 		return nil, err
 	}

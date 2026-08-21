@@ -131,7 +131,7 @@ func ApplyIntentsWithDSN(ctx context.Context, dsn string, riskStore *riskstorage
 			}
 		}
 	}
-	return applications(ctx, store, intents)
+	return applications(ctx, store, strategy.AnalysisRunID, intents)
 }
 
 func validate(strategy StrategyContext, intents []Intent, targets []Target) error {
@@ -209,31 +209,31 @@ func apply(ctx context.Context, store *storage.Store, riskStore *riskstorage.Sto
 		return err
 	}
 	if intent.Side == "hold" || quantity <= 0 {
-		return store.CompleteIntentApplication(ctx, intent.ID, target.ID, "not_applicable", nil, nil, nil)
+		return store.CompleteIntentApplication(ctx, runID, intent.ID, target.ID, "not_applicable", nil, nil, nil)
 	}
 	decision, err := risk.Evaluate(ctx, riskStore, portfolio, risk.ProposedOperation{Asset: intent.Asset, Side: risk.Side(intent.Side), Quantity: quantity, Value: application.ProposedValue}, risk.EvalOptions{})
 	if err != nil {
-		return store.SetIntentApplicationRisk(ctx, intent.ID, target.ID, "risk_error", nil, nil)
+		return store.SetIntentApplicationRisk(ctx, runID, intent.ID, target.ID, "risk_error", nil, nil)
 	}
 	if !decision.Allowed {
-		return store.SetIntentApplicationRisk(ctx, intent.ID, target.ID, "rejected", &decision.Allowed, decision.Reasons)
+		return store.SetIntentApplicationRisk(ctx, runID, intent.ID, target.ID, "rejected", &decision.Allowed, decision.Reasons)
 	}
-	if err := store.SetIntentApplicationRisk(ctx, intent.ID, target.ID, "executing", &decision.Allowed, decision.Reasons); err != nil {
+	if err := store.SetIntentApplicationRisk(ctx, runID, intent.ID, target.ID, "executing", &decision.Allowed, decision.Reasons); err != nil {
 		return err
 	}
 	outcome, err := target.Executor.Execute(ctx, intent.Asset, risk.Side(intent.Side), quantity, price, intent.ID)
 	if err != nil {
-		return store.CompleteIntentApplication(ctx, intent.ID, target.ID, "execution_error", nil, nil, nil)
+		return store.CompleteIntentApplication(ctx, runID, intent.ID, target.ID, "execution_error", nil, nil, nil)
 	}
-	return store.CompleteIntentApplication(ctx, intent.ID, target.ID, outcome.Status, &outcome.OrderID, &outcome.FilledQuantity, &outcome.FilledPrice)
+	return store.CompleteIntentApplication(ctx, runID, intent.ID, target.ID, outcome.Status, &outcome.OrderID, &outcome.FilledQuantity, &outcome.FilledPrice)
 }
 
-func applications(ctx context.Context, store *storage.Store, intents []Intent) ([]Application, error) {
+func applications(ctx context.Context, store *storage.Store, analysisRunID string, intents []Intent) ([]Application, error) {
 	ids := make([]string, len(intents))
 	for i, intent := range intents {
 		ids[i] = intent.ID
 	}
-	recorded, err := store.IntentApplications(ctx, ids)
+	recorded, err := store.IntentApplications(ctx, analysisRunID, ids)
 	if err != nil {
 		return nil, err
 	}
