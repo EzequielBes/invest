@@ -49,6 +49,25 @@ func TestFetch_ParsesCointelegraphFixture(t *testing.T) {
 	}
 }
 
+func TestFetch_ParsesMarketWatchFixture_GMTAbbreviatedDate(t *testing.T) {
+	srv := serveFixture(t, "testdata/marketwatch.xml")
+	defer srv.Close()
+
+	items, err := Fetch(context.Background(), httpclient.New(100, 10), "marketwatch", srv.URL)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	// MarketWatch's pubDate uses "GMT" instead of a numeric offset
+	// (RFC1123 vs RFC1123Z) — the item must not be silently dropped.
+	if len(items) != 1 {
+		t.Fatalf("len(items) = %d, want 1 (GMT-format date must parse, not be skipped)", len(items))
+	}
+	wantTime := time.Date(2026, 8, 22, 20, 45, 0, 0, time.UTC)
+	if !items[0].PublishedAt.Equal(wantTime) {
+		t.Errorf("PublishedAt = %v, want %v", items[0].PublishedAt, wantTime)
+	}
+}
+
 func TestFetch_ParsesCoindeskFixture(t *testing.T) {
 	srv := serveFixture(t, "testdata/coindesk.xml")
 	defer srv.Close()

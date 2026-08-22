@@ -43,7 +43,7 @@ func Fetch(ctx context.Context, client *httpclient.Client, sourceName, feedURL s
 
 	items := make([]Item, 0, len(feed.Channel.Items))
 	for _, raw := range feed.Channel.Items {
-		published, err := time.Parse(time.RFC1123Z, raw.PubDate)
+		published, err := parsePubDate(raw.PubDate)
 		if err != nil {
 			continue // skip items with an unparseable date rather than failing the whole feed
 		}
@@ -56,4 +56,21 @@ func Fetch(ctx context.Context, client *httpclient.Client, sourceName, feedURL s
 		})
 	}
 	return items, nil
+}
+
+// pubDateFormats covers the RSS pubDate variants observed across feeds:
+// numeric offset (RFC1123Z, e.g. Cointelegraph/CoinDesk) and named zone
+// abbreviation like "GMT" (RFC1123, e.g. MarketWatch).
+var pubDateFormats = []string{time.RFC1123Z, time.RFC1123}
+
+func parsePubDate(raw string) (time.Time, error) {
+	var lastErr error
+	for _, format := range pubDateFormats {
+		t, err := time.Parse(format, raw)
+		if err == nil {
+			return t, nil
+		}
+		lastErr = err
+	}
+	return time.Time{}, lastErr
 }

@@ -163,6 +163,7 @@ func (s *Store) RecentLiquidations(ctx context.Context, exchange, symbol string,
 
 // NewsItem is the shape read from market-data's news_items table.
 type NewsItem struct {
+	Source      string
 	Title       string
 	Body        string
 	URL         string
@@ -170,10 +171,10 @@ type NewsItem struct {
 }
 
 // RecentNews returns news items published at or after since, across all
-// sources — callers filter by asset in-memory.
+// sources — callers filter by asset/category in-memory.
 func (s *Store) RecentNews(ctx context.Context, since time.Time) ([]NewsItem, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT title, body, url, published_at FROM news_items WHERE published_at >= $1
+		SELECT source, title, body, url, published_at FROM news_items WHERE published_at >= $1
 	`, since)
 	if err != nil {
 		return nil, err
@@ -183,7 +184,7 @@ func (s *Store) RecentNews(ctx context.Context, since time.Time) ([]NewsItem, er
 	var items []NewsItem
 	for rows.Next() {
 		var it NewsItem
-		if err := rows.Scan(&it.Title, &it.Body, &it.URL, &it.PublishedAt); err != nil {
+		if err := rows.Scan(&it.Source, &it.Title, &it.Body, &it.URL, &it.PublishedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, it)

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:media="http://search.yahoo.com/mrss/" xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0"
+>
+<channel>
+<title>MarketWatch.com - Top Stories</title>
+<description>MarketWatch, a leading publisher of business and financial news.</description>
+<link>http://www.marketwatch.com/</link>
+<language>en-us</language>
+<item>
+<guid isPermaLink="false">WP-MKTW-0005191768</guid>
+<title>Fed signals rate path amid inflation data</title>
+<description>The Federal Reserve weighed its next move as markets awaited fresh data.</description>
+<link>https://www.marketwatch.com/story/fed-signals-rate-path?mod=mw_rss_topstories</link>
+<pubDate>Sat, 22 Aug 2026 20:45:00 GMT</pubDate>
+<dc:creator>Jane Doe</dc:creator>
+</item>
+</channel>
+</rss>
