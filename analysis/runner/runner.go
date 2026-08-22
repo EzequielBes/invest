@@ -153,7 +153,9 @@ func prepare(ctx context.Context, store *storage.Store, riskStore *riskstorage.S
 		if name == "" {
 			name = asset
 		}
-		output, err = agents.News(ctx, store, asset, name)
+		// TODO(alpaca-stocks): "crypto" is hardcoded until asset-class
+		// routing lands — every asset traded today is crypto.
+		output, err = agents.News(ctx, store, asset, name, "crypto")
 		if err != nil {
 			return err
 		}
@@ -165,7 +167,15 @@ func prepare(ctx context.Context, store *storage.Store, riskStore *riskstorage.S
 	if err != nil {
 		return err
 	}
-	return saveOutput(ctx, store, runID, "risk_context", "", output)
+	if err := saveOutput(ctx, store, runID, "risk_context", "", output); err != nil {
+		return err
+	}
+
+	output, err = agents.Macro(ctx, store)
+	if err != nil {
+		return err
+	}
+	return saveOutput(ctx, store, runID, "macro", "", output)
 }
 
 // SubmitNarrativesWithDSN stores one validated narrative stage. Retrying the
@@ -190,9 +200,6 @@ func SubmitNarrativesWithDSN(ctx context.Context, dsn, runID, stage string, subm
 	}
 	for _, submission := range submissions {
 		indicators := indicatorsFor(results, stage, submission.Asset)
-		if stage == "macro" {
-			indicators, _ = json.Marshal(agents.MacroIndicators{AssetsAnalyzed: assetCount(results), SourceCount: len(results)})
-		}
 		if err := store.SaveResult(ctx, storage.Result{ID: uuid.NewString(), RunID: runID, AgentType: stage, Asset: submission.Asset, Indicators: indicators, Narrative: strings.TrimSpace(submission.Narrative), CreatedAt: time.Now().UTC()}); err != nil {
 			return fmt.Errorf("save %s narrative: %w", stage, err)
 		}
@@ -334,8 +341,6 @@ func hasNarrative(results []storage.AgentResult, agentType, asset string) bool {
 	}
 	return false
 }
-
-func assetCount(results []storage.AgentResult) int { return len(assetsFromResults(results)) }
 
 func assetsFromResults(results []storage.AgentResult) []string {
 	assets := make([]string, 0)

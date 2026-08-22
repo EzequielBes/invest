@@ -14,6 +14,7 @@ import (
 	"market-data/internal/exchange/bybit"
 	"market-data/internal/exchange/okx"
 	"market-data/internal/httpclient"
+	"market-data/internal/macrofeed"
 	"market-data/internal/newsfeed"
 	"market-data/internal/scheduler"
 	"market-data/internal/storage"
@@ -104,6 +105,13 @@ func main() {
 	newsClient := httpclient.New(1, 2)
 	go runNewsPoller(ctx, store, newsClient)
 
+	if cfg.FredAPIKey != "" {
+		macroClient := httpclient.New(1, 2)
+		go runMacroPoller(ctx, store, macroClient, cfg.FredAPIKey)
+	} else {
+		log.Print("FRED_API_KEY not set, skipping macro indicator polling")
+	}
+
 	<-ctx.Done()
 	log.Print("shutting down")
 }
@@ -112,6 +120,7 @@ func runNewsPoller(ctx context.Context, store *storage.Store, client *httpclient
 	feeds := map[string]string{
 		"coindesk":      "https://www.coindesk.com/arc/outboundfeeds/rss/",
 		"cointelegraph": "https://cointelegraph.com/rss",
+		"marketwatch":   "https://www.marketwatch.com/rss/topstories",
 	}
 	ticker := time.NewTicker(10 * time.Minute)
 	defer ticker.Stop()
@@ -126,6 +135,39 @@ func runNewsPoller(ctx context.Context, store *storage.Store, client *httpclient
 			for _, item := range items {
 				if _, err := store.InsertNewsItem(ctx, item.Source, item.Title, item.Body, item.URL, item.PublishedAt); err != nil {
 					log.Printf("news: insert %s: %v", source, err)
+				}
+			}
+		}
+	}
+
+	poll()
+	for {
+		select {
+		case <-ticker.C:
+			poll()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// runMacroPoller polls FRED daily — these series update monthly, so
+// the news poller's 10-minute cadence would be wasteful here.
+func runMacroPoller(ctx context.Context, store *storage.Store, client *httpclient.Client, apiKey string) {
+	series := []string{"FEDFUNDS", "CPIAUCSL", "UNRATE"}
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+
+	poll := func() {
+		for _, seriesID := range series {
+			observations, err := macrofeed.Fetch(ctx, client, seriesID, apiKey)
+			if err != nil {
+				log.Printf("macro: fetch %s: %v", seriesID, err)
+				continue
+			}
+			for _, obs := range observations {
+				if err := store.InsertMacroObservation(ctx, seriesID, obs.ObservedAt, obs.Value); err != nil {
+					log.Printf("macro: insert %s: %v", seriesID, err)
 				}
 			}
 		}

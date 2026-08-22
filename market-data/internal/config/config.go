@@ -16,6 +16,7 @@ var defaultAssets = []string{
 type Config struct {
 	DatabaseURL string
 	Assets      []string
+	FredAPIKey  string
 }
 
 func Load() (Config, error) {
@@ -36,5 +37,5 @@ func Load() (Config, error) {
 		}
 	}
 
-	return Config{DatabaseURL: dbURL, Assets: assets}, nil
+	return Config{DatabaseURL: dbURL, Assets: assets, FredAPIKey: os.Getenv("FRED_API_KEY")}, nil
 }
