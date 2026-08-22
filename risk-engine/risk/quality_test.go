@@ -20,10 +20,10 @@ type fakeMarketData struct {
 	recentErr   error
 }
 
-func (f *fakeMarketData) LatestCandle(ctx context.Context, exchange, symbol string, asOf *time.Time) (storage.Candle, bool, error) {
+func (f *fakeMarketData) LatestCandle(ctx context.Context, exchange, symbol, timeframe string, asOf *time.Time) (storage.Candle, bool, error) {
 	return f.latest, f.latestFound, f.latestErr
 }
-func (f *fakeMarketData) RecentCandles(ctx context.Context, exchange, symbol string, n int, asOf *time.Time) ([]storage.Candle, error) {
+func (f *fakeMarketData) RecentCandles(ctx context.Context, exchange, symbol, timeframe string, n int, asOf *time.Time) ([]storage.Candle, error) {
 	return f.recent, f.recentErr
 }
 
@@ -179,7 +179,7 @@ func TestCheckVolatility_RejectsCandleGap(t *testing.T) {
 }
 
 func TestAssessEligibilityRejectsIncompleteEvidence(t *testing.T) {
-	result := AssessEligibility("NEW", storage.EligibilityMetrics{}, time.Now().UTC())
+	result := AssessEligibility("NEW", storage.EligibilityMetrics{}, time.Now().UTC(), "binance", "1m")
 	if result.Eligible || len(result.Reasons) != 4 {
 		t.Fatalf("result = %+v, want all missing-evidence gates rejected", result)
 	}
@@ -194,9 +194,9 @@ func TestAssessEligibilityAllowsCompleteEvidence(t *testing.T) {
 	result := AssessEligibility("BTC", storage.EligibilityMetrics{
 		HistoryStartedAt:       now.Add(-eligibilityHistory),
 		ThirtyDayClosedCandles: int(float64(eligibilityWindow/time.Minute) * minimumCoverage),
-		ActiveExchangeCount:    minimumActiveExchanges,
+		ActiveExchangeCount:    minimumActiveExchangesCrypto,
 		RecentCandles:          candles,
-	}, now)
+	}, now, "binance", "1m")
 	if !result.Eligible {
 		t.Fatalf("result = %+v, want eligible", result)
 	}

@@ -159,7 +159,7 @@ func TestEvaluate_RejectsOnMissingMarketData(t *testing.T) {
 
 // seedFreshCandles inserts n fresh, low-volatility, high-liquidity 1m
 // candles for asset via the exchange market data checks read from
-// (ReferenceExchange), so every quality rule (freshness/volatility/
+// ("binance"), so every quality rule (freshness/volatility/
 // liquidity) passes for tests that need Evaluate to get past quality checks
 // and exercise a different rule.
 func seedFreshCandles(t *testing.T, ctx context.Context, seeder *storagetest.Seeder, asset string) {
@@ -172,12 +172,12 @@ func seedFreshCandles(t *testing.T, ctx context.Context, seeder *storagetest.See
 	for i := 0; i < 60; i++ {
 		ts := now.Add(time.Duration(i-60) * time.Minute)
 		price := 100 + float64(i)*0.01
-		if err := seeder.InsertCandle(ctx, ReferenceExchange, asset, ts, price, price, price, price, 50000); err != nil {
+		if err := seeder.InsertCandle(ctx, "binance", asset, ts, price, price, price, price, 50000); err != nil {
 			t.Fatalf("seed candle %d: %v", i, err)
 		}
 	}
 	t.Cleanup(func() {
-		seeder.DeleteCandles(context.Background(), ReferenceExchange, asset)
+		seeder.DeleteCandles(context.Background(), "binance", asset)
 	})
 }
 
@@ -370,10 +370,10 @@ func TestEvaluate_AsOf_QualityChecksIgnoreFutureCandles(t *testing.T) {
 	// Seed only a stale-relative-to-asOf candle: 45 minutes before asOf,
 	// exceeding the seeded max_data_age_minutes (30).
 	past := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Minute)
-	if err := seeder.InsertCandle(ctx, ReferenceExchange, asset, past, 100, 100, 100, 100, 50000); err != nil {
+	if err := seeder.InsertCandle(ctx, "binance", asset, past, 100, 100, 100, 100, 50000); err != nil {
 		t.Fatalf("seed candle: %v", err)
 	}
-	t.Cleanup(func() { seeder.DeleteCandles(context.Background(), ReferenceExchange, asset) })
+	t.Cleanup(func() { seeder.DeleteCandles(context.Background(), "binance", asset) })
 
 	asOf := past.Add(45 * time.Minute)
 	decision, err := Evaluate(ctx, s, PortfolioState{Cash: 10000},

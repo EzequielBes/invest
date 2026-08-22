@@ -38,12 +38,12 @@ func seedHourlyCandles(t *testing.T, simStore *simstorage.Store, asset string, b
 	ctx := context.Background()
 	for i, c := range closes {
 		ts := base.Add(time.Duration(i) * time.Hour)
-		if err := simStore.InsertCandleForTest(ctx, risk.ReferenceExchange, asset, "1h", ts, c, c, c, c, 100000); err != nil {
+		if err := simStore.InsertCandleForTest(ctx, "binance", asset, "1h", ts, c, c, c, c, 100000); err != nil {
 			t.Fatalf("seed candle %d: %v", i, err)
 		}
 	}
 	t.Cleanup(func() {
-		simStore.DeleteCandlesForTest(context.Background(), risk.ReferenceExchange, asset, "1h")
+		simStore.DeleteCandlesForTest(context.Background(), "binance", asset, "1h")
 	})
 }
 
@@ -61,13 +61,13 @@ func seedMinuteCandles(t *testing.T, simStore *simstorage.Store, asset string, b
 	for h, c := range hourlyCloses {
 		for _, min := range []int{58, 59} {
 			ts := base.Add(time.Duration(h)*time.Hour + time.Duration(min)*time.Minute)
-			if err := simStore.InsertCandleForTest(ctx, risk.ReferenceExchange, asset, "1m", ts, c, c, c, c, 100000); err != nil {
+			if err := simStore.InsertCandleForTest(ctx, "binance", asset, "1m", ts, c, c, c, c, 100000); err != nil {
 				t.Fatalf("seed 1m candle at %s: %v", ts, err)
 			}
 		}
 	}
 	t.Cleanup(func() {
-		simStore.DeleteCandlesForTest(context.Background(), risk.ReferenceExchange, asset, "1m")
+		simStore.DeleteCandlesForTest(context.Background(), "binance", asset, "1m")
 	})
 }
 

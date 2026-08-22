@@ -12,20 +12,20 @@ import (
 )
 
 func Derivatives(ctx context.Context, store *storage.Store, asset string) (Output, error) {
-	fundingRate, _, err := store.LatestFundingRate(ctx, risk.ReferenceExchange, asset)
+	fundingRate, _, err := store.LatestFundingRate(ctx, risk.ExchangeFor(asset), asset)
 	if err != nil {
 		return Output{}, fmt.Errorf("agents: derivatives: fetch funding rate: %w", err)
 	}
 	now := time.Now().UTC()
-	currentOI, _, err := store.OpenInterestNear(ctx, risk.ReferenceExchange, asset, now)
+	currentOI, _, err := store.OpenInterestNear(ctx, risk.ExchangeFor(asset), asset, now)
 	if err != nil {
 		return Output{}, fmt.Errorf("agents: derivatives: fetch open interest: %w", err)
 	}
-	oi24hAgo, _, err := store.OpenInterestNear(ctx, risk.ReferenceExchange, asset, now.Add(-24*time.Hour))
+	oi24hAgo, _, err := store.OpenInterestNear(ctx, risk.ExchangeFor(asset), asset, now.Add(-24*time.Hour))
 	if err != nil {
 		return Output{}, fmt.Errorf("agents: derivatives: fetch open interest 24h ago: %w", err)
 	}
-	rawLiqs, err := store.RecentLiquidations(ctx, risk.ReferenceExchange, asset, now.Add(-time.Hour))
+	rawLiqs, err := store.RecentLiquidations(ctx, risk.ExchangeFor(asset), asset, now.Add(-time.Hour))
 	if err != nil {
 		return Output{}, fmt.Errorf("agents: derivatives: fetch liquidations: %w", err)
 	}

@@ -10,19 +10,23 @@ import (
 	"risk-engine/storage"
 )
 
-// ReferenceExchange is which exchange's market data quality rules are
-// checked against. All three exchanges are collected by the
-// market-data-foundation sub-project, but for a single personal risk
-// check, one consistent reference source is simpler and sufficient for
-// this phase.
-const ReferenceExchange = "binance"
-
 const (
-	eligibilityHistory     = 180 * 24 * time.Hour
-	eligibilityWindow      = 30 * 24 * time.Hour
-	minimumCoverage        = 0.95
-	minimumActiveExchanges = 2
-	minimumConsecutiveBars = 60
+	eligibilityHistory = 180 * 24 * time.Hour
+	eligibilityWindow  = 30 * 24 * time.Hour
+	minimumCoverage    = 0.95
+
+	// minimumActiveExchanges: crypto requires redundancy across
+	// independent venues (binance/bybit/okx); a single-source asset class
+	// like Alpaca-only stocks has no second venue to require.
+	minimumActiveExchangesCrypto = 2
+	minimumActiveExchangesStock  = 1
+
+	// minimumConsecutiveBars: crypto's abundant 1m candle data supports a
+	// tight window; stocks (free-tier Alpaca, 15min-delayed) use a
+	// coarser 5m candle, so the same 60-bar count spans 5 hours instead
+	// of 1 — a realistic window given the data actually available.
+	minimumConsecutiveBarsCrypto = 60
+	minimumConsecutiveBarsStock  = 60
 )
 
 // EligibilityResult is a deterministic preflight result. It narrows the
@@ -33,22 +37,38 @@ type EligibilityResult struct {
 	Reasons  []string
 }
 
+// barDuration maps the two candle granularities this system collects to
+// their duration, for eligibility's coverage/consecutiveness math. Not a
+// general timeframe parser — this system only ever uses these two.
+var barDuration = map[string]time.Duration{"1m": time.Minute, "5m": 5 * time.Minute}
+
 // AssessEligibility applies the baseline universe policy using only closed
-// market data. Missing data is a rejection, never an implicit approval.
-func AssessEligibility(asset string, metrics storage.EligibilityMetrics, now time.Time) EligibilityResult {
+// market data, for exchange/timeframe (the reference venue and candle
+// granularity for asset's class — crypto and stocks use different
+// thresholds since crypto has multi-exchange redundancy and abundant 1m
+// data that a single-source, 5m-delayed stock feed doesn't). Missing data
+// is a rejection, never an implicit approval.
+func AssessEligibility(asset string, metrics storage.EligibilityMetrics, now time.Time, exchange, timeframe string) EligibilityResult {
 	result := EligibilityResult{Asset: asset, Eligible: true}
 	if metrics.HistoryStartedAt.IsZero() || metrics.HistoryStartedAt.After(now.Add(-eligibilityHistory)) {
-		result.Reasons = append(result.Reasons, "requires at least 180 days of Binance candle history")
+		result.Reasons = append(result.Reasons, fmt.Sprintf("requires at least 180 days of %s candle history", exchange))
 	}
-	expected := int(eligibilityWindow / time.Minute)
+	expected := int(eligibilityWindow / barDuration[timeframe])
 	if float64(metrics.ThirtyDayClosedCandles)/float64(expected) < minimumCoverage {
-		result.Reasons = append(result.Reasons, "requires at least 95% closed 1m candle coverage over 30 days")
+		result.Reasons = append(result.Reasons, fmt.Sprintf("requires at least 95%% closed %s candle coverage over 30 days", timeframe))
 	}
-	if metrics.ActiveExchangeCount < minimumActiveExchanges {
-		result.Reasons = append(result.Reasons, "requires fresh candles from at least two exchanges")
+
+	minActiveExchanges := minimumActiveExchangesCrypto
+	minConsecutiveBars := minimumConsecutiveBarsCrypto
+	if !IsCrypto(asset) {
+		minActiveExchanges = minimumActiveExchangesStock
+		minConsecutiveBars = minimumConsecutiveBarsStock
 	}
-	if !consecutiveMinuteCandles(metrics.RecentCandles, minimumConsecutiveBars) {
-		result.Reasons = append(result.Reasons, "requires 60 consecutive closed Binance 1m candles")
+	if metrics.ActiveExchangeCount < minActiveExchanges {
+		result.Reasons = append(result.Reasons, fmt.Sprintf("requires fresh candles from at least %d exchange(s)", minActiveExchanges))
+	}
+	if !consecutiveCandles(metrics.RecentCandles, minConsecutiveBars, barDuration[timeframe]) {
+		result.Reasons = append(result.Reasons, fmt.Sprintf("requires %d consecutive closed %s %s candles", minConsecutiveBars, exchange, timeframe))
 	}
 	result.Eligible = len(result.Reasons) == 0
 	return result
@@ -57,12 +77,24 @@ func AssessEligibility(asset string, metrics storage.EligibilityMetrics, now tim
 // marketDataReader is the slice of *storage.Store this file depends on, so
 // quality rules are unit-testable with a fake instead of a real database.
 type marketDataReader interface {
-	LatestCandle(ctx context.Context, exchange, symbol string, asOf *time.Time) (storage.Candle, bool, error)
-	RecentCandles(ctx context.Context, exchange, symbol string, n int, asOf *time.Time) ([]storage.Candle, error)
+	LatestCandle(ctx context.Context, exchange, symbol, timeframe string, asOf *time.Time) (storage.Candle, bool, error)
+	RecentCandles(ctx context.Context, exchange, symbol, timeframe string, n int, asOf *time.Time) ([]storage.Candle, error)
+}
+
+// qualityTimeframe returns the reference exchange, candle timeframe, and
+// per-bar duration to check asset's data quality against — crypto and
+// stocks route to different venues/granularities (see ExchangeFor).
+func qualityTimeframe(asset string) (exchange, timeframe string, minConsecutiveBars int) {
+	exchange = ExchangeFor(asset)
+	if IsCrypto(asset) {
+		return exchange, "1m", minimumConsecutiveBarsCrypto
+	}
+	return exchange, "5m", minimumConsecutiveBarsStock
 }
 
 func checkDataFreshness(ctx context.Context, md marketDataReader, asset string, maxAgeMinutes int, asOf *time.Time) RuleResult {
-	candle, found, err := md.LatestCandle(ctx, ReferenceExchange, asset, asOf)
+	exchange, timeframe, _ := qualityTimeframe(asset)
+	candle, found, err := md.LatestCandle(ctx, exchange, asset, timeframe, asOf)
 	if err != nil {
 		return RuleResult{Rule: "data_freshness", Passed: false, Limit: float64(maxAgeMinutes), Detail: fmt.Sprintf("market data lookup failed: %v", err)}
 	}
@@ -82,12 +114,13 @@ func checkDataFreshness(ctx context.Context, md marketDataReader, asset string, 
 }
 
 func checkVolatility(ctx context.Context, md marketDataReader, asset string, maxVolatility float64, asOf *time.Time) RuleResult {
-	candles, err := md.RecentCandles(ctx, ReferenceExchange, asset, 60, asOf)
+	exchange, timeframe, minConsecutiveBars := qualityTimeframe(asset)
+	candles, err := md.RecentCandles(ctx, exchange, asset, timeframe, minConsecutiveBars, asOf)
 	if err != nil {
 		return RuleResult{Rule: "volatility", Passed: false, Limit: maxVolatility, Detail: fmt.Sprintf("market data lookup failed: %v", err)}
 	}
-	if !consecutiveMinuteCandles(candles, minimumConsecutiveBars) {
-		return RuleResult{Rule: "volatility", Passed: false, Limit: maxVolatility, Detail: "requires 60 consecutive closed 1m candles"}
+	if !consecutiveCandles(candles, minConsecutiveBars, barDuration[timeframe]) {
+		return RuleResult{Rule: "volatility", Passed: false, Limit: maxVolatility, Detail: fmt.Sprintf("requires %d consecutive closed %s candles", minConsecutiveBars, timeframe)}
 	}
 	vol := stddevReturns(candles)
 	return RuleResult{
@@ -123,12 +156,13 @@ func stddevReturns(candles []storage.Candle) float64 {
 }
 
 func checkLiquidity(ctx context.Context, md marketDataReader, asset string, minLiquidity float64, asOf *time.Time) RuleResult {
-	candles, err := md.RecentCandles(ctx, ReferenceExchange, asset, 60, asOf)
+	exchange, timeframe, minConsecutiveBars := qualityTimeframe(asset)
+	candles, err := md.RecentCandles(ctx, exchange, asset, timeframe, minConsecutiveBars, asOf)
 	if err != nil {
 		return RuleResult{Rule: "liquidity", Passed: false, Limit: minLiquidity, Detail: fmt.Sprintf("market data lookup failed: %v", err)}
 	}
-	if !consecutiveMinuteCandles(candles, minimumConsecutiveBars) {
-		return RuleResult{Rule: "liquidity", Passed: false, Limit: minLiquidity, Detail: "requires 60 consecutive closed 1m candles"}
+	if !consecutiveCandles(candles, minConsecutiveBars, barDuration[timeframe]) {
+		return RuleResult{Rule: "liquidity", Passed: false, Limit: minLiquidity, Detail: fmt.Sprintf("requires %d consecutive closed %s candles", minConsecutiveBars, timeframe)}
 	}
 	var quoteVolume float64
 	for _, c := range candles {
@@ -141,12 +175,15 @@ func checkLiquidity(ctx context.Context, md marketDataReader, asset string, minL
 	}
 }
 
-func consecutiveMinuteCandles(candles []storage.Candle, want int) bool {
+// consecutiveCandles reports whether candles has exactly want entries,
+// each barDuration apart from the last — generalizes the original crypto-
+// only 1-minute check to any candle granularity.
+func consecutiveCandles(candles []storage.Candle, want int, barDuration time.Duration) bool {
 	if len(candles) != want {
 		return false
 	}
 	for i := 1; i < len(candles); i++ {
-		if !candles[i].Time.Equal(candles[i-1].Time.Add(time.Minute)) {
+		if !candles[i].Time.Equal(candles[i-1].Time.Add(barDuration)) {
 			return false
 		}
 	}

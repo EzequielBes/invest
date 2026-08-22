@@ -8,17 +8,22 @@ import (
 
 func seedCandles(t *testing.T, s *Store, exchange, symbol string, candles []Candle) {
 	t.Helper()
+	seedCandlesTF(t, s, exchange, symbol, "1m", candles)
+}
+
+func seedCandlesTF(t *testing.T, s *Store, exchange, symbol, timeframe string, candles []Candle) {
+	t.Helper()
 	ctx := context.Background()
 	for _, c := range candles {
 		_, err := s.pool.Exec(ctx, `
 			INSERT INTO candles (exchange, symbol, timeframe, ts, open, high, low, close, volume)
-			VALUES ($1, $2, '1m', $3, $4, $5, $6, $7, $8)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 			ON CONFLICT (exchange, symbol, timeframe, ts) DO UPDATE
 			SET open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
 			    close = EXCLUDED.close, volume = EXCLUDED.volume
-		`, exchange, symbol, c.Time, c.Open, c.High, c.Low, c.Close, c.Volume)
+		`, exchange, symbol, timeframe, c.Time, c.Open, c.High, c.Low, c.Close, c.Volume)
 		if err != nil {
-			t.Fatalf("seedCandles insert: %v", err)
+			t.Fatalf("seedCandlesTF insert: %v", err)
 		}
 	}
 	t.Cleanup(func() {
@@ -34,7 +39,7 @@ func TestLatestCandle(t *testing.T) {
 		{Time: now.Add(-1 * time.Minute), Open: 100.5, High: 102, Low: 100, Close: 101, Volume: 12},
 	})
 
-	c, found, err := s.LatestCandle(context.Background(), "test-exchange", "TESTCOIN", nil)
+	c, found, err := s.LatestCandle(context.Background(), "test-exchange", "TESTCOIN", "1m", nil)
 	if err != nil {
 		t.Fatalf("LatestCandle: %v", err)
 	}
@@ -48,7 +53,7 @@ func TestLatestCandle(t *testing.T) {
 
 func TestLatestCandle_NotFound(t *testing.T) {
 	s := testStore(t)
-	_, found, err := s.LatestCandle(context.Background(), "test-exchange", "NOSUCHASSET", nil)
+	_, found, err := s.LatestCandle(context.Background(), "test-exchange", "NOSUCHASSET", "1m", nil)
 	if err != nil {
 		t.Fatalf("LatestCandle: %v", err)
 	}
@@ -73,7 +78,7 @@ func TestRecentCandles_OldestFirst(t *testing.T) {
 		{Time: now.Add(-1 * time.Minute), Close: 104, Volume: 5},
 	})
 
-	candles, err := s.RecentCandles(context.Background(), "test-exchange", "TESTCOIN2", 3, nil)
+	candles, err := s.RecentCandles(context.Background(), "test-exchange", "TESTCOIN2", "1m", 3, nil)
 	if err != nil {
 		t.Fatalf("RecentCandles: %v", err)
 	}
@@ -99,7 +104,7 @@ func TestLatestCandle_AsOf_IgnoresFutureCandles(t *testing.T) {
 	})
 
 	asOf := now.Add(-1 * time.Minute)
-	c, found, err := s.LatestCandle(context.Background(), "test-exchange", "TESTCOIN3", &asOf)
+	c, found, err := s.LatestCandle(context.Background(), "test-exchange", "TESTCOIN3", "1m", &asOf)
 	if err != nil {
 		t.Fatalf("LatestCandle: %v", err)
 	}
@@ -122,7 +127,7 @@ func TestRecentCandles_AsOf_IgnoresFutureCandles(t *testing.T) {
 	})
 
 	asOf := now.Add(-1 * time.Minute)
-	candles, err := s.RecentCandles(context.Background(), "test-exchange", "TESTCOIN4", 10, &asOf)
+	candles, err := s.RecentCandles(context.Background(), "test-exchange", "TESTCOIN4", "1m", 10, &asOf)
 	if err != nil {
 		t.Fatalf("RecentCandles: %v", err)
 	}
@@ -133,5 +138,30 @@ func TestRecentCandles_AsOf_IgnoresFutureCandles(t *testing.T) {
 	}
 	if len(candles) != 2 {
 		t.Fatalf("len(candles) = %d, want 2 (closes 100, 101 — the -1min candle's own close time equals asOf, so it's excluded too)", len(candles))
+	}
+}
+
+// TestRecentCandles_TimeframeIsolatesResults proves timeframe is a real
+// filter, not an ignored parameter: seeding the same symbol at both "1m"
+// and "5m" must return only the requested timeframe's rows.
+func TestRecentCandles_TimeframeIsolatesResults(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().UTC().Truncate(5 * time.Minute)
+	seedCandlesTF(t, s, "test-exchange", "TESTCOIN5", "1m", []Candle{
+		{Time: now.Add(-1 * time.Minute), Close: 111, Volume: 1},
+	})
+	seedCandlesTF(t, s, "test-exchange", "TESTCOIN5", "5m", []Candle{
+		{Time: now.Add(-5 * time.Minute), Close: 555, Volume: 1},
+	})
+
+	candles, err := s.RecentCandles(context.Background(), "test-exchange", "TESTCOIN5", "5m", 10, nil)
+	if err != nil {
+		t.Fatalf("RecentCandles: %v", err)
+	}
+	if len(candles) != 1 {
+		t.Fatalf("len(candles) = %d, want 1 (only the 5m row, not the 1m one)", len(candles))
+	}
+	if candles[0].Close != 555 {
+		t.Errorf("candles[0].Close = %v, want 555 (the 5m candle, not the 1m one)", candles[0].Close)
 	}
 }

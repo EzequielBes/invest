@@ -100,11 +100,16 @@ func eligibleAssets(ctx context.Context, riskStore *riskstorage.Store, assets []
 	eligible := make([]string, 0, len(assets))
 	exclusions := make([]risk.EligibilityResult, 0)
 	for _, asset := range assets {
-		metrics, err := riskStore.EligibilityMetrics(ctx, asset)
+		exchange := risk.ExchangeFor(asset)
+		timeframe := "1m"
+		if !risk.IsCrypto(asset) {
+			timeframe = "5m"
+		}
+		metrics, err := riskStore.EligibilityMetrics(ctx, asset, exchange, timeframe)
 		if err != nil {
 			return nil, nil, fmt.Errorf("read eligibility metrics for %s: %w", asset, err)
 		}
-		result := risk.AssessEligibility(asset, metrics, time.Now().UTC())
+		result := risk.AssessEligibility(asset, metrics, time.Now().UTC(), exchange, timeframe)
 		if result.Eligible {
 			eligible = append(eligible, asset)
 		} else {
@@ -153,9 +158,11 @@ func prepare(ctx context.Context, store *storage.Store, riskStore *riskstorage.S
 		if name == "" {
 			name = asset
 		}
-		// TODO(alpaca-stocks): "crypto" is hardcoded until asset-class
-		// routing lands — every asset traded today is crypto.
-		output, err = agents.News(ctx, store, asset, name, "crypto")
+		assetClass := "crypto"
+		if !risk.IsCrypto(asset) {
+			assetClass = "stock"
+		}
+		output, err = agents.News(ctx, store, asset, name, assetClass)
 		if err != nil {
 			return err
 		}
@@ -364,7 +371,7 @@ func saveCommittee(ctx context.Context, store *storage.Store, riskStore *risksto
 	inputs := make([]ranking.Input, 0, len(assessments))
 	persisted := make(map[string]agents.CommitteeAssessment, len(assessments))
 	for _, assessment := range assessments {
-		quality, found, err := store.QualityForRanking(ctx, risk.ReferenceExchange, assessment.Asset)
+		quality, found, err := store.QualityForRanking(ctx, risk.ExchangeFor(assessment.Asset), assessment.Asset)
 		if err != nil {
 			return fmt.Errorf("committee/%s data quality: %w", assessment.Asset, err)
 		}

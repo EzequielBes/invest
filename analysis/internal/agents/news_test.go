@@ -33,22 +33,26 @@ func deleteNewsByURL(ctx context.Context, url string) {
 }
 
 // TestNews_FiltersByAssetClassCategory proves category filtering by using
-// a search term ("Bitcoin") that only appears in a crypto-sourced
-// article's body. A stock-class News call for that same term must find
+// a made-up, collision-proof search term that only appears in a crypto-
+// sourced fixture article's body — a real word like "Bitcoin" risks
+// matching real MarketWatch articles that legitimately mention crypto in
+// stock-market context, which would make this test flaky against live
+// collected data. A stock-class News call for the fixture term must find
 // nothing, even though the text would match — the category gate runs
 // before the keyword search, not after.
 func TestNews_FiltersByAssetClassCategory(t *testing.T) {
 	store := testMacroStore(t)
 	ctx := context.Background()
+	needle := "Zqxvunicorn" + time.Now().Format("150405")
 
 	cryptoURL := "https://example.com/crypto-" + time.Now().Format("150405.000000")
 	t.Cleanup(func() { deleteNewsByURL(context.Background(), cryptoURL) })
 
-	if err := seedNewsItem(ctx, "coindesk", "Bitcoin surges", "Bitcoin rallied today on strong volume", cryptoURL); err != nil {
+	if err := seedNewsItem(ctx, "coindesk", needle+" surges", needle+" rallied today on strong volume", cryptoURL); err != nil {
 		t.Fatalf("seed crypto news: %v", err)
 	}
 
-	cryptoOutput, err := News(ctx, store, "Bitcoin", "Bitcoin", "crypto")
+	cryptoOutput, err := News(ctx, store, needle, needle, "crypto")
 	if err != nil {
 		t.Fatalf("News (crypto class): %v", err)
 	}
@@ -57,7 +61,7 @@ func TestNews_FiltersByAssetClassCategory(t *testing.T) {
 		t.Fatal("expected the crypto-class query to find the coindesk article (sanity check before testing exclusion)")
 	}
 
-	stockOutput, err := News(ctx, store, "Bitcoin", "Bitcoin", "stock")
+	stockOutput, err := News(ctx, store, needle, needle, "stock")
 	if err != nil {
 		t.Fatalf("News (stock class): %v", err)
 	}

@@ -35,25 +35,29 @@ func checkAssetConcentration(portfolio PortfolioState, proposed ProposedOperatio
 }
 
 // checkCryptoTotalConcentration rejects an operation that would push total
-// crypto exposure (all positions — everything is crypto in this phase)
-// above maxPct of total portfolio value.
+// crypto exposure above maxPct of total portfolio value. Non-crypto
+// positions (e.g. stocks) count toward total but not toward crypto.
 func checkCryptoTotalConcentration(portfolio PortfolioState, proposed ProposedOperation, maxPct float64) RuleResult {
 	total := portfolio.Cash
 	var crypto float64
-	for _, p := range portfolio.Positions {
+	for asset, p := range portfolio.Positions {
 		total += p.Value
-		crypto += p.Value
+		if IsCrypto(asset) {
+			crypto += p.Value
+		}
 	}
 	if total <= 0 {
 		return RuleResult{Rule: "crypto_total_concentration", Passed: true, Limit: maxPct, Detail: "no portfolio value to evaluate"}
 	}
 
-	if proposed.Side == SideBuy {
-		crypto += proposed.Value
-	} else {
-		crypto -= proposed.Value
-		if crypto < 0 {
-			crypto = 0
+	if IsCrypto(proposed.Asset) {
+		if proposed.Side == SideBuy {
+			crypto += proposed.Value
+		} else {
+			crypto -= proposed.Value
+			if crypto < 0 {
+				crypto = 0
+			}
 		}
 	}
 

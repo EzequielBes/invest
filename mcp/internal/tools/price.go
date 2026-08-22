@@ -14,7 +14,7 @@ import (
 type GetLatestPriceArgs struct {
 	Asset     string `json:"asset" jsonschema:"the asset symbol, e.g. BTC"`
 	Timeframe string `json:"timeframe,omitempty" jsonschema:"candle timeframe to read, defaults to 1h"`
-	Exchange  string `json:"exchange,omitempty" jsonschema:"exchange to read from, defaults to the platform's reference exchange (binance)"`
+	Exchange  string `json:"exchange,omitempty" jsonschema:"exchange to read from, defaults to the asset's configured exchange"`
 }
 
 // GetLatestPriceResult is the get_latest_price tool's output.
@@ -37,7 +37,7 @@ func GetLatestPrice(ctx context.Context, store *storage.Store, args GetLatestPri
 	}
 	exchange := args.Exchange
 	if exchange == "" {
-		exchange = risk.ReferenceExchange
+		exchange = risk.ExchangeFor(args.Asset)
 	}
 	price, found, err := store.LatestPrice(ctx, exchange, args.Asset, timeframe)
 	if err != nil {

@@ -169,7 +169,7 @@ func runLoop(ctx context.Context, riskStore *riskstorage.Store, simStore *simsto
 func latestDrivingCandles(ctx context.Context, simStore *simstorage.Store, assets []string, drivingTimeframe string, asOf time.Time) (map[string]simstorage.Candle, error) {
 	out := map[string]simstorage.Candle{}
 	for _, asset := range assets {
-		candles, err := simStore.RecentCandles(ctx, risk.ReferenceExchange, asset, drivingTimeframe, 1, asOf)
+		candles, err := simStore.RecentCandles(ctx, risk.ExchangeFor(asset), asset, drivingTimeframe, 1, asOf)
 		if err != nil {
 			return nil, err
 		}

@@ -11,7 +11,7 @@ import (
 )
 
 func Technical(ctx context.Context, store *storage.Store, asset, timeframe string) (Output, error) {
-	candles, err := store.RecentCandles(ctx, risk.ReferenceExchange, asset, timeframe, indicators.MinCandles)
+	candles, err := store.RecentCandles(ctx, risk.ExchangeFor(asset), asset, timeframe, indicators.MinCandles)
 	if err != nil {
 		return Output{}, fmt.Errorf("agents: technical: fetch candles: %w", err)
 	}

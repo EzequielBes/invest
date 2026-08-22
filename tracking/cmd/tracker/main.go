@@ -15,10 +15,17 @@ import (
 	"tracking/internal/storage"
 )
 
-const (
-	defaultIntervalMinutes = 15
-	priceTimeframe         = "1m"
-)
+const defaultIntervalMinutes = 15
+
+// priceTimeframeFor returns the candle timeframe asset's price is
+// collected at — matches risk.ExchangeFor's routing (crypto: 1m, stocks:
+// 5m via Alpaca's free-tier delay).
+func priceTimeframeFor(asset string) string {
+	if risk.IsCrypto(asset) {
+		return "1m"
+	}
+	return "5m"
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -92,7 +99,7 @@ func snapshotOnce(ctx context.Context, store priceStore, execClient executorClie
 
 	positionsValue := 0.0
 	for asset, qty := range positions {
-		price, found, err := store.LatestPrice(ctx, risk.ReferenceExchange, asset, priceTimeframe)
+		price, found, err := store.LatestPrice(ctx, risk.ExchangeFor(asset), asset, priceTimeframeFor(asset))
 		if err != nil {
 			log.Printf("tracker: price for %s: %v", asset, err)
 			return

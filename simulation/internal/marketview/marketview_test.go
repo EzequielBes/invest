@@ -7,8 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"risk-engine/risk"
-
 	"simulation/internal/storage"
 )
 
@@ -37,11 +35,11 @@ func TestView_Candles_UsesAdvancedNowAsCutoff(t *testing.T) {
 			t.Fatalf("seed candle: %v", err)
 		}
 	}
-	must(store.InsertCandleForTest(ctx, risk.ReferenceExchange, "MVCOIN", "1h", base, 100, 100, 100, 100, 1))
-	must(store.InsertCandleForTest(ctx, risk.ReferenceExchange, "MVCOIN", "1h", base.Add(time.Hour), 101, 101, 101, 101, 1))
-	must(store.InsertCandleForTest(ctx, risk.ReferenceExchange, "MVCOIN", "1h", base.Add(2*time.Hour), 999, 999, 999, 999, 1))
+	must(store.InsertCandleForTest(ctx, "binance", "MVCOIN", "1h", base, 100, 100, 100, 100, 1))
+	must(store.InsertCandleForTest(ctx, "binance", "MVCOIN", "1h", base.Add(time.Hour), 101, 101, 101, 101, 1))
+	must(store.InsertCandleForTest(ctx, "binance", "MVCOIN", "1h", base.Add(2*time.Hour), 999, 999, 999, 999, 1))
 	t.Cleanup(func() {
-		store.DeleteCandlesForTest(context.Background(), risk.ReferenceExchange, "MVCOIN", "1h")
+		store.DeleteCandlesForTest(context.Background(), "binance", "MVCOIN", "1h")
 	})
 
 	view := New(store)

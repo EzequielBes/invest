@@ -11,7 +11,7 @@ import (
 )
 
 // View implements strategy.MarketView: candles closed at or before Now(),
-// read from risk.ReferenceExchange — the same reference exchange
+// read from risk.ExchangeFor(asset) — the same per-asset exchange
 // risk-engine's own quality checks use.
 type View struct {
 	store *storage.Store
@@ -33,5 +33,5 @@ func (v *View) Now() time.Time {
 }
 
 func (v *View) Candles(ctx context.Context, timeframe, asset string, n int) ([]storage.Candle, error) {
-	return v.store.RecentCandles(ctx, risk.ReferenceExchange, asset, timeframe, n, v.now)
+	return v.store.RecentCandles(ctx, risk.ExchangeFor(asset), asset, timeframe, n, v.now)
 }
