@@ -19,11 +19,19 @@ import (
 	"execution/paperstore"
 )
 
-const promptTemplate = `You are the investment platform's specialist in asset-universe governance and risk-aware research. Use the configured investment-platform MCP server only; do not call exchange, database, HTTP, or other APIs directly. Read AUTOMATION_ASSETS from the environment and use those comma-separated asset symbols.
+const promptTemplate = `You are the investment platform's specialist in asset-universe governance and risk-aware research. Use the configured investment-platform MCP server only; do not call exchange, database, HTTP, or other APIs directly. The asset universe is %q (comma-separated symbols).
 
-First call get_automation_controls. If both paper_enabled and testnet_enabled are false, stop without changing anything. Otherwise run exactly this staged workflow: call prepare_analysis exactly once with AUTOMATION_ASSETS and timeframe %q. Its exclusions are deterministic policy failures: do not analyze, rank, or create intents for excluded assets. If it returns no analysis_run_id, all candidates were excluded: report the exclusions and stop. For each eligible asset, assess data quality, liquidity, market structure, derivatives, and material protocol/news risks; compare evidence, not price predictions. Use its analysis_run_id to call get_analysis_context; submit_analysis_narratives in order for technical, derivatives, news, risk_context, then macro. For every risk_context narrative, set asset to the empty string. For every committee assessment, thesis must be exactly one of bull|bear|neutro; do not use English alternatives. The narrative must state the evidence and unresolved risks supporting the assessment. Call submit_committee_assessments; call prepare_strategy; then call apply_strategy_intents with only explicit targets currently enabled by get_automation_controls. Never call prepare_analysis again in this cycle. Never change automation controls. Do not use legacy run_analysis, run_strategist, or run_paper_strategist tools.`
+First call get_automation_controls. If both paper_enabled and testnet_enabled are false, stop without changing anything. Otherwise run exactly this staged workflow: call prepare_analysis exactly once with the asset universe above and timeframe %q. Its exclusions are deterministic policy failures: do not analyze, rank, or create intents for excluded assets. If it returns no analysis_run_id, all candidates were excluded: report the exclusions and stop. For each eligible asset, assess data quality, liquidity, market structure, derivatives, and material protocol/news risks; compare evidence, not price predictions. Use its analysis_run_id to call get_analysis_context; submit_analysis_narratives in order for technical, derivatives, news, risk_context, then macro. For every risk_context narrative, set asset to the empty string. For every committee assessment, thesis must be exactly one of bull|bear|neutro; do not use English alternatives. The narrative must state the evidence and unresolved risks supporting the assessment. Call submit_committee_assessments; call prepare_strategy; then call apply_strategy_intents with only explicit targets currently enabled by get_automation_controls. Never call prepare_analysis again in this cycle. Never change automation controls. Do not use legacy run_analysis, run_strategist, or run_paper_strategist tools.`
 
-func prompt(timeframe string) string { return fmt.Sprintf(promptTemplate, timeframe) }
+func prompt(assets, timeframe string) string { return fmt.Sprintf(promptTemplate, assets, timeframe) }
+
+const stagedMCPTools = "mcp__investment-platform__get_automation_controls," +
+	"mcp__investment-platform__prepare_analysis," +
+	"mcp__investment-platform__get_analysis_context," +
+	"mcp__investment-platform__submit_analysis_narratives," +
+	"mcp__investment-platform__submit_committee_assessments," +
+	"mcp__investment-platform__prepare_strategy," +
+	"mcp__investment-platform__apply_strategy_intents"
 
 type controlsReader interface {
 	GetAutomationControls(context.Context) (paperstore.AutomationControls, error)
@@ -59,7 +67,7 @@ func (l loop) cycle(ctx context.Context) error {
 		if l.claude == "" {
 			return errors.New("CLAUDE_CODE_BIN is required when active_agent is claude_code")
 		}
-		return l.run(ctx, l.claude, "-p", l.prompt)
+		return l.run(ctx, l.claude, "-p", l.prompt, "--allowedTools", stagedMCPTools)
 	case "codex":
 		if l.codex == "" {
 			return errors.New("CODEX_BIN is required when active_agent is codex")
@@ -79,7 +87,8 @@ func main() {
 }
 
 func run(ctx context.Context) error {
-	if os.Getenv("AUTOMATION_ASSETS") == "" {
+	assets := os.Getenv("AUTOMATION_ASSETS")
+	if assets == "" {
 		return errors.New("AUTOMATION_ASSETS is required")
 	}
 	timeframe, err := automationTimeframe(os.Getenv("AUTOMATION_TIMEFRAME"))
@@ -113,7 +122,7 @@ func run(ctx context.Context) error {
 
 	l := loop{controls: store, cleanup: func(ctx context.Context) error {
 		return runner.CleanupStalePendingWithDSN(ctx, dsn)
-	}, claude: os.Getenv("CLAUDE_CODE_BIN"), codex: os.Getenv("CODEX_BIN"), prompt: prompt(timeframe), run: func(ctx context.Context, name string, args ...string) error {
+	}, claude: os.Getenv("CLAUDE_CODE_BIN"), codex: os.Getenv("CODEX_BIN"), prompt: prompt(assets, timeframe), run: func(ctx context.Context, name string, args ...string) error {
 		return exec.CommandContext(ctx, name, args...).Run()
 	}}
 	for {

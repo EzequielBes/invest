@@ -41,8 +41,8 @@ func TestCycle_RunsSelectedAgentWithFixedPrompt(t *testing.T) {
 		bin   string
 		args  []string
 	}{
-		{name: "claude", agent: "claude_code", bin: "/opt/claude", args: []string{"-p", prompt("1h")}},
-		{name: "codex", agent: "codex", bin: "/opt/codex", args: []string{"exec", prompt("1h")}},
+		{name: "claude", agent: "claude_code", bin: "/opt/claude", args: []string{"-p", prompt("BTC", "1h"), "--allowedTools", stagedMCPTools}},
+		{name: "codex", agent: "codex", bin: "/opt/codex", args: []string{"exec", prompt("BTC", "1h")}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -63,7 +63,7 @@ func TestCycle_RunsSelectedAgentWithFixedPrompt(t *testing.T) {
 				},
 				claude: claude,
 				codex:  codex,
-				prompt: prompt("1h"),
+				prompt: prompt("BTC", "1h"),
 				run: func(_ context.Context, name string, args ...string) error {
 					if !cleaned {
 						t.Fatal("agent ran before stale analysis cleanup")
@@ -88,20 +88,26 @@ func TestCycle_RunsSelectedAgentWithFixedPrompt(t *testing.T) {
 }
 
 func TestPrompt_IncludesTimeframeInPrepareAnalysis(t *testing.T) {
-	if got := prompt("1m"); !strings.Contains(got, `prepare_analysis exactly once with AUTOMATION_ASSETS and timeframe "1m"`) {
+	if got := prompt("BTC", "1m"); !strings.Contains(got, `prepare_analysis exactly once with the asset universe above and timeframe "1m"`) {
 		t.Errorf("prompt = %q, want prepare_analysis timeframe", got)
 	}
 }
 
+func TestPrompt_IncludesAssetsFromParameter(t *testing.T) {
+	if got := prompt("BTC,ETH", "1h"); !strings.Contains(got, `asset universe is "BTC,ETH"`) {
+		t.Errorf("prompt = %q, want asset universe BTC,ETH", got)
+	}
+}
+
 func TestPrompt_GetsContextWithoutRepeatingPreparation(t *testing.T) {
-	got := prompt("1h")
+	got := prompt("BTC", "1h")
 	if !strings.Contains(got, "prepare_analysis exactly once") || !strings.Contains(got, "get_analysis_context") || !strings.Contains(got, "Never call prepare_analysis again in this cycle") {
 		t.Errorf("prompt = %q, want one preparation followed by context retrieval", got)
 	}
 }
 
 func TestPrompt_StatesSubscriptionNarrativeConstraints(t *testing.T) {
-	got := prompt("1h")
+	got := prompt("BTC", "1h")
 	for _, want := range []string{"risk_context narrative, set asset to the empty string", "thesis must be exactly one of bull|bear|neutro; do not use English alternatives", "specialist in asset-universe governance", "exclusions are deterministic policy failures", "all candidates were excluded"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("prompt = %q, want %q", got, want)

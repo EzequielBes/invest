@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__investment-platform__prepare_analysis",
+      "mcp__investment-platform__get_analysis_context",
+      "mcp__investment-platform__submit_analysis_narratives",
+      "mcp__investment-platform__submit_committee_assessments",
+      "mcp__investment-platform__prepare_strategy",
+      "mcp__investment-platform__apply_strategy_intents"
+    ]
+  }
+}
