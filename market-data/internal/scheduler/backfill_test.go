@@ -28,6 +28,18 @@ type fakeCollector struct {
 
 func (f *fakeCollector) Name() string { return f.name }
 
+// sameAssetsFor builds the assetsByCollector map Backfill/RecoverGaps/
+// RunLive now take, with every named collector sharing the same asset
+// list — the shape every existing test needs, since they all pre-date
+// per-collector asset lists.
+func sameAssetsFor(names []string, assets []string) map[string][]string {
+	m := make(map[string][]string, len(names))
+	for _, name := range names {
+		m[name] = assets
+	}
+	return m
+}
+
 func (f *fakeCollector) FetchCandles(ctx context.Context, symbol string, tf exchange.Timeframe, from, to time.Time) ([]exchange.Candle, error) {
 	f.calls++
 	if f.failCandlesOn > 0 && f.calls == f.failCandlesOn {
@@ -148,7 +160,7 @@ func TestBackfill_Orchestration(t *testing.T) {
 	collectors := []exchange.Collector{fc}
 	assets := []string{"BTC", "ETH"}
 
-	err := Backfill(context.Background(), store, store, store, collectors, assets, 24*time.Hour)
+	err := Backfill(context.Background(), store, store, store, collectors, sameAssetsFor([]string{"test"}, assets), 24*time.Hour)
 	if err != nil {
 		t.Fatalf("Backfill: %v", err)
 	}
@@ -170,7 +182,7 @@ func TestBackfill_FailureStatus(t *testing.T) {
 	collectors := []exchange.Collector{fc}
 	assets := []string{"BTC"}
 
-	err := Backfill(context.Background(), store, store, store, collectors, assets, 24*time.Hour)
+	err := Backfill(context.Background(), store, store, store, collectors, sameAssetsFor([]string{"test"}, assets), 24*time.Hour)
 	if err != nil {
 		t.Fatalf("Backfill: %v", err)
 	}
@@ -193,7 +205,7 @@ func TestBackfill_ContinuesAfterFailure(t *testing.T) {
 	collectors := []exchange.Collector{fc}
 	assets := []string{"BTC", "ETH"}
 
-	err := Backfill(context.Background(), store, store, store, collectors, assets, 24*time.Hour)
+	err := Backfill(context.Background(), store, store, store, collectors, sameAssetsFor([]string{"test"}, assets), 24*time.Hour)
 	if err != nil {
 		t.Fatalf("Backfill: %v", err)
 	}
@@ -217,7 +229,7 @@ func TestBackfill_RunsCollectorsConcurrently(t *testing.T) {
 	collectors := []exchange.Collector{fc1, fc2}
 	assets := []string{"BTC", "ETH"}
 
-	err := Backfill(context.Background(), store, store, store, collectors, assets, 24*time.Hour)
+	err := Backfill(context.Background(), store, store, store, collectors, sameAssetsFor([]string{"c1", "c2"}, assets), 24*time.Hour)
 	if err != nil {
 		t.Fatalf("Backfill: %v", err)
 	}
@@ -257,7 +269,7 @@ func TestBackfill_SkipsCandlesWhenAlreadyCovered(t *testing.T) {
 	collectors := []exchange.Collector{fc}
 	assets := []string{"BTC"}
 
-	err := Backfill(context.Background(), store, store, store, collectors, assets, 24*time.Hour)
+	err := Backfill(context.Background(), store, store, store, collectors, sameAssetsFor([]string{"test"}, assets), 24*time.Hour)
 	if err != nil {
 		t.Fatalf("Backfill: %v", err)
 	}
@@ -297,7 +309,7 @@ func TestBackfill_DoesNotSkipCandlesWhenCoverageIsRecentOnly(t *testing.T) {
 	collectors := []exchange.Collector{fc}
 	assets := []string{"BTC"}
 
-	err := Backfill(context.Background(), store, store, store, collectors, assets, 365*24*time.Hour)
+	err := Backfill(context.Background(), store, store, store, collectors, sameAssetsFor([]string{"test"}, assets), 365*24*time.Hour)
 	if err != nil {
 		t.Fatalf("Backfill: %v", err)
 	}
@@ -324,7 +336,7 @@ func TestBackfill_ChecksCoveragePerTimeframe(t *testing.T) {
 	collectors := []exchange.Collector{fc}
 	assets := []string{"BTC"}
 
-	err := Backfill(context.Background(), store, store, store, collectors, assets, 24*time.Hour)
+	err := Backfill(context.Background(), store, store, store, collectors, sameAssetsFor([]string{"test"}, assets), 24*time.Hour)
 	if err != nil {
 		t.Fatalf("Backfill: %v", err)
 	}

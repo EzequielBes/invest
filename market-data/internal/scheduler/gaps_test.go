@@ -26,7 +26,7 @@ func TestRecoverGaps_BackfillsWhenLatestCandleIsStale(t *testing.T) {
 		found:  map[string]bool{"fake|BTC|1h": true},
 	}
 
-	err := RecoverGaps(context.Background(), store, []exchange.Collector{fc}, []string{"BTC"})
+	err := RecoverGaps(context.Background(), store, []exchange.Collector{fc}, sameAssetsFor([]string{"fake"}, []string{"BTC"}))
 	if err != nil {
 		t.Fatalf("RecoverGaps: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestRecoverGaps_ContinuesAfterFailure(t *testing.T) {
 		},
 	}
 
-	err := RecoverGaps(context.Background(), store, []exchange.Collector{fc}, []string{"BTC", "ETH"})
+	err := RecoverGaps(context.Background(), store, []exchange.Collector{fc}, sameAssetsFor([]string{"fake"}, []string{"BTC", "ETH"}))
 	if err != nil {
 		t.Fatalf("RecoverGaps: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestRecoverGaps_SkipsWhenNoPriorData(t *testing.T) {
 	fc := &fakeCollector{name: "fake", maxCalls: 100}
 	store := &fakeLatestStore{latest: map[string]time.Time{}, found: map[string]bool{}}
 
-	err := RecoverGaps(context.Background(), store, []exchange.Collector{fc}, []string{"BTC"})
+	err := RecoverGaps(context.Background(), store, []exchange.Collector{fc}, sameAssetsFor([]string{"fake"}, []string{"BTC"}))
 	if err != nil {
 		t.Fatalf("RecoverGaps: %v", err)
 	}

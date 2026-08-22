@@ -38,12 +38,15 @@ func timeframeDuration(tf exchange.Timeframe) time.Duration {
 // (e.g. a rate-limit blip) must not skip recovery for every other
 // asset/exchange/timeframe combination — mirroring how Backfill already
 // handles per-pair errors.
-func RecoverGaps(ctx context.Context, store latestCandleStore, collectors []exchange.Collector, assets []string) error {
+// assetsByCollector is keyed by collector.Name() — each collector's gaps
+// are only checked against its own asset list, not a single list shared
+// by every collector.
+func RecoverGaps(ctx context.Context, store latestCandleStore, collectors []exchange.Collector, assetsByCollector map[string][]string) error {
 	now := time.Now().UTC()
 	timeframes := []exchange.Timeframe{exchange.Timeframe1m, exchange.Timeframe1h, exchange.Timeframe1d}
 
 	for _, c := range collectors {
-		for _, symbol := range assets {
+		for _, symbol := range assetsByCollector[c.Name()] {
 			for _, tf := range timeframes {
 				latest, found, err := store.LatestCandleTime(ctx, c.Name(), symbol, tf)
 				if err != nil {

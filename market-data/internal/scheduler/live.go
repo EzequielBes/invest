@@ -20,9 +20,13 @@ type liquidationStore interface {
 // a live-liquidation consumer, and a funding/open-interest poller (every 5
 // minutes — funding settles every 8h and OI moves slowly, so this is far
 // more often than needed but cheap and simple). Blocks until ctx is done.
-func RunLive(ctx context.Context, cs candleStore, fs fundingStore, ls liquidationStore, collectors []exchange.Collector, assets []string) {
+// assetsByCollector is keyed by collector.Name() — each collector only
+// streams/polls its own asset list (e.g. crypto tickers for binance, stock
+// tickers for alpaca), not a single list shared by every collector.
+func RunLive(ctx context.Context, cs candleStore, fs fundingStore, ls liquidationStore, collectors []exchange.Collector, assetsByCollector map[string][]string) {
 	for _, c := range collectors {
 		c := c
+		assets := assetsByCollector[c.Name()]
 		for _, tf := range []exchange.Timeframe{exchange.Timeframe1m, exchange.Timeframe1h, exchange.Timeframe1d} {
 			tf := tf
 			ch, err := c.StreamCandles(ctx, assets, tf)

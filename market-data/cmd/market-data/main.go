@@ -8,8 +8,11 @@ import (
 	"syscall"
 	"time"
 
+	"os"
+
 	"market-data/internal/config"
 	"market-data/internal/exchange"
+	"market-data/internal/exchange/alpaca"
 	"market-data/internal/exchange/binance"
 	"market-data/internal/exchange/bybit"
 	"market-data/internal/exchange/okx"
@@ -55,6 +58,22 @@ func main() {
 		bybit.New(httpclient.New(5, 5)),
 		okx.New(httpclient.New(5, 5)),
 	}
+	assetsByCollector := map[string][]string{
+		"binance": cfg.Assets,
+		"bybit":   cfg.Assets,
+		"okx":     cfg.Assets,
+	}
+
+	// Alpaca only joins the pipeline once both credentials and a stock
+	// asset list are configured — an empty asset list would mean the
+	// collector runs and does nothing, which is just noise.
+	alpacaKey, alpacaSecret := os.Getenv("ALPACA_API_KEY"), os.Getenv("ALPACA_API_SECRET_KEY")
+	if len(cfg.StockAssets) > 0 && alpacaKey != "" && alpacaSecret != "" {
+		collectors = append(collectors, alpaca.New(httpclient.New(3, 5), alpacaKey, alpacaSecret))
+		assetsByCollector["alpaca"] = cfg.StockAssets
+	} else if len(cfg.StockAssets) > 0 {
+		log.Print("ALPACA_ASSETS set but ALPACA_API_KEY/ALPACA_API_SECRET_KEY missing, skipping stock collection")
+	}
 
 	// Backfill runs in the background rather than blocking startup: with the
 	// real ~1.5-year depth across every asset/exchange it can take hours,
@@ -64,9 +83,9 @@ func main() {
 	// backfilled candles both go through InsertCandles's upsert, so the two
 	// can run concurrently without a correctness issue — worst case is a
 	// redundant overwrite of the same data.
-	log.Printf("starting backfill for %d assets across %d exchanges (running in background)", len(cfg.Assets), len(collectors))
+	log.Printf("starting backfill for %d exchanges (running in background)", len(collectors))
 	go func() {
-		if err := scheduler.Backfill(ctx, store, store, store, collectors, cfg.Assets, backfillDepth); err != nil {
+		if err := scheduler.Backfill(ctx, store, store, store, collectors, assetsByCollector, backfillDepth); err != nil {
 			log.Printf("backfill: %v", err)
 		} else {
 			log.Print("backfill complete")
@@ -74,7 +93,7 @@ func main() {
 	}()
 
 	log.Print("recovering any gaps since last run")
-	if err := scheduler.RecoverGaps(ctx, store, collectors, cfg.Assets); err != nil {
+	if err := scheduler.RecoverGaps(ctx, store, collectors, assetsByCollector); err != nil {
 		log.Printf("gap recovery: %v", err)
 	}
 
@@ -90,7 +109,7 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
-				if err := scheduler.RecoverGaps(ctx, store, collectors, cfg.Assets); err != nil {
+				if err := scheduler.RecoverGaps(ctx, store, collectors, assetsByCollector); err != nil {
 					log.Printf("periodic gap recovery: %v", err)
 				}
 			case <-ctx.Done():
@@ -100,7 +119,7 @@ func main() {
 	}()
 
 	log.Print("starting live collection")
-	scheduler.RunLive(ctx, store, store, store, collectors, cfg.Assets)
+	scheduler.RunLive(ctx, store, store, store, collectors, assetsByCollector)
 
 	newsClient := httpclient.New(1, 2)
 	go runNewsPoller(ctx, store, newsClient)

@@ -16,7 +16,24 @@ var defaultAssets = []string{
 type Config struct {
 	DatabaseURL string
 	Assets      []string
+	StockAssets []string
 	FredAPIKey  string
+}
+
+// parseAssetList splits a comma-separated env var into a trimmed,
+// non-empty asset list.
+func parseAssetList(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	assets := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			assets = append(assets, p)
+		}
+	}
+	return assets
 }
 
 func Load() (Config, error) {
@@ -26,16 +43,14 @@ func Load() (Config, error) {
 	}
 
 	assets := append([]string(nil), defaultAssets...)
-	if raw := os.Getenv("ASSETS"); raw != "" {
-		parts := strings.Split(raw, ",")
-		assets = make([]string, 0, len(parts))
-		for _, p := range parts {
-			p = strings.TrimSpace(p)
-			if p != "" {
-				assets = append(assets, p)
-			}
-		}
+	if parsed := parseAssetList(os.Getenv("ASSETS")); parsed != nil {
+		assets = parsed
 	}
 
-	return Config{DatabaseURL: dbURL, Assets: assets, FredAPIKey: os.Getenv("FRED_API_KEY")}, nil
+	return Config{
+		DatabaseURL: dbURL,
+		Assets:      assets,
+		StockAssets: parseAssetList(os.Getenv("ALPACA_ASSETS")),
+		FredAPIKey:  os.Getenv("FRED_API_KEY"),
+	}, nil
 }

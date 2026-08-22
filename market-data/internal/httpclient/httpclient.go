@@ -24,12 +24,23 @@ func New(requestsPerSecond float64, burst int) *Client {
 }
 
 func (c *Client) Get(ctx context.Context, url string) ([]byte, error) {
+	return c.GetWithHeaders(ctx, url, nil)
+}
+
+// GetWithHeaders is Get plus caller-supplied request headers — needed for
+// APIs authenticated via headers instead of a URL query param (e.g.
+// Alpaca's APCA-API-KEY-ID/APCA-API-SECRET-KEY), so credentials never end
+// up in a logged URL.
+func (c *Client) GetWithHeaders(ctx context.Context, url string, headers map[string]string) ([]byte, error) {
 	if err := c.limiter.Wait(ctx); err != nil {
 		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {

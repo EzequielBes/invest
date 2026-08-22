@@ -143,7 +143,10 @@ const backfillCoverageTolerance = 48 * time.Hour
 // starting their backfill behind Binance's ~10 hour run. Errors are logged
 // per-pair inside backfillCollector rather than aggregated/returned, since
 // one collector's failure shouldn't abort the others.
-func Backfill(ctx context.Context, cs candleStore, fs fundingStore, rs runStore, collectors []exchange.Collector, assets []string, depth time.Duration) error {
+// assetsByCollector is keyed by collector.Name() — each collector backfills
+// only its own asset list (e.g. crypto tickers for binance, stock tickers
+// for alpaca), not a single list shared by every collector.
+func Backfill(ctx context.Context, cs candleStore, fs fundingStore, rs runStore, collectors []exchange.Collector, assetsByCollector map[string][]string, depth time.Duration) error {
 	to := time.Now().UTC()
 	from := to.Add(-depth)
 	timeframes := []exchange.Timeframe{exchange.Timeframe1m, exchange.Timeframe1h, exchange.Timeframe1d}
@@ -154,7 +157,7 @@ func Backfill(ctx context.Context, cs candleStore, fs fundingStore, rs runStore,
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			backfillCollector(ctx, cs, fs, rs, c, assets, from, to, timeframes)
+			backfillCollector(ctx, cs, fs, rs, c, assetsByCollector[c.Name()], from, to, timeframes)
 		}()
 	}
 	wg.Wait()

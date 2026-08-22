@@ -35,3 +35,31 @@ func TestGet_ErrorsOnNon2xx(t *testing.T) {
 		t.Fatal("expected error on 429 response")
 	}
 }
+
+func TestGetWithHeaders_SendsProvidedHeaders(t *testing.T) {
+	var gotKeyID, gotSecret string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKeyID = r.Header.Get("APCA-API-KEY-ID")
+		gotSecret = r.Header.Get("APCA-API-SECRET-KEY")
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	c := New(100, 10)
+	body, err := c.GetWithHeaders(context.Background(), srv.URL, map[string]string{
+		"APCA-API-KEY-ID":     "key123",
+		"APCA-API-SECRET-KEY": "secret456",
+	})
+	if err != nil {
+		t.Fatalf("GetWithHeaders: %v", err)
+	}
+	if string(body) != `{"ok":true}` {
+		t.Errorf("body = %q", body)
+	}
+	if gotKeyID != "key123" {
+		t.Errorf("APCA-API-KEY-ID header = %q, want %q", gotKeyID, "key123")
+	}
+	if gotSecret != "secret456" {
+		t.Errorf("APCA-API-SECRET-KEY header = %q, want %q", gotSecret, "secret456")
+	}
+}
