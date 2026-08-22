@@ -1,0 +1,15 @@
+[Unit]
+Description=Investment platform web API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/documents/farmdinheiro/invest/web-api
+Environment=DATABASE_URL=postgres://marketdata:marketdata@localhost:5432/marketdata?sslmode=disable
+ExecStart=%h/documents/farmdinheiro/invest/web-api/web-api
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
