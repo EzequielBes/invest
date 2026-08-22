@@ -41,9 +41,15 @@ func Evaluate(ctx context.Context, store *storage.Store, portfolio PortfolioStat
 		return Decision{}, fmt.Errorf("risk: get limits: %w", err)
 	}
 
+	closedTrades, err := store.ClosedTradeOutcomes(ctx, proposed.Asset)
+	if err != nil {
+		return Decision{}, fmt.Errorf("risk: closed trade outcomes: %w", err)
+	}
+	assetCap := KellyFractionCap(toKellyOutcomes(closedTrades), limits.MaxPctPerAsset)
+
 	var results []RuleResult
 	results = append(results,
-		checkAssetConcentration(portfolio, proposed, limits.MaxPctPerAsset),
+		checkAssetConcentration(portfolio, proposed, assetCap),
 		checkCryptoTotalConcentration(portfolio, proposed, limits.MaxPctCryptoTotal),
 		checkMaxTradeValue(proposed, limits.MaxValuePerTrade),
 	)
@@ -106,6 +112,14 @@ func Evaluate(ctx context.Context, store *storage.Store, portfolio PortfolioStat
 		return Decision{}, fmt.Errorf("risk: record decision: %w", err)
 	}
 	return d, nil
+}
+
+func toKellyOutcomes(trades []storage.TradeOutcome) []TradeOutcome {
+	outcomes := make([]TradeOutcome, len(trades))
+	for i, t := range trades {
+		outcomes[i] = TradeOutcome{PnLPct: t.PnLPct}
+	}
+	return outcomes
 }
 
 func toRecord(proposed ProposedOperation, d Decision) storage.DecisionRecord {

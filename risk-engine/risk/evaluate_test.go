@@ -165,8 +165,12 @@ func TestEvaluate_RejectsOnMissingMarketData(t *testing.T) {
 func seedFreshCandles(t *testing.T, ctx context.Context, seeder *storagetest.Seeder, asset string) {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Minute)
-	for i := 0; i < 10; i++ {
-		ts := now.Add(time.Duration(i-9) * time.Minute)
+	// minimumConsecutiveBars (quality.go) requires 60 consecutive closed 1m
+	// candles for volatility/liquidity checks to pass. RecentCandles excludes
+	// the current, still-open minute (ts < date_trunc('minute', now())), so
+	// the most recent seeded candle must be at least 1 minute in the past.
+	for i := 0; i < 60; i++ {
+		ts := now.Add(time.Duration(i-60) * time.Minute)
 		price := 100 + float64(i)*0.01
 		if err := seeder.InsertCandle(ctx, ReferenceExchange, asset, ts, price, price, price, price, 50000); err != nil {
 			t.Fatalf("seed candle %d: %v", i, err)

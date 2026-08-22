@@ -50,6 +50,21 @@ func (s *Seeder) DeleteCandles(ctx context.Context, exchange, symbol string) {
 	s.pool.Exec(ctx, `DELETE FROM candles WHERE exchange = $1 AND symbol = $2`, exchange, symbol)
 }
 
+// InsertPaperFill seeds a closed sell fill (with cost_basis/realized_pnl)
+// against execution's paper_fills table, for tests of Kelly sizing that
+// need closed-trade history for an asset.
+func (s *Seeder) InsertPaperFill(ctx context.Context, asset string, quantity, price, costBasis, realizedPnL float64) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO paper_fills (id, asset, side, quantity, price, cost_basis, realized_pnl, created_at)
+		VALUES (gen_random_uuid()::text, $1, 'sell', $2, $3, $4, $5, now())
+	`, asset, quantity, price, costBasis, realizedPnL)
+	return err
+}
+
+func (s *Seeder) DeletePaperFills(ctx context.Context, asset string) {
+	s.pool.Exec(ctx, `DELETE FROM paper_fills WHERE asset = $1`, asset)
+}
+
 // CountApprovedDecisions counts risk_decisions rows recorded as approved for
 // asset. This is a narrow, purpose-built method for one test assertion —
 // not a general ad-hoc query escape hatch.
