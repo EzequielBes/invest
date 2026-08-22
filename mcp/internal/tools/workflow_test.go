@@ -63,8 +63,8 @@ func TestApplyStrategyIntentsRequiresExplicitSupportedTarget(t *testing.T) {
 			t.Fatalf("requestedTargets(%v) accepted", targets)
 		}
 	}
-	requested, err := requestedTargets([]string{"paper", "testnet"})
-	if err != nil || !requested["paper"] || !requested["testnet"] {
+	requested, err := requestedTargets([]string{"paper", "testnet", "alpaca_paper"})
+	if err != nil || !requested["paper"] || !requested["testnet"] || !requested["alpaca_paper"] {
 		t.Fatalf("requestedTargets returned %v, %v", requested, err)
 	}
 }

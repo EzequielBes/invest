@@ -126,7 +126,7 @@ func newServer(store *storage.Store, riskStore *riskstorage.Store, paperStore *p
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "apply_strategy_intents",
-		Description: "Risk-check and apply structured intents only to explicitly requested paper and/or testnet targets. Each requested target must be enabled; real trading is never an implicit target.",
+		Description: "Risk-check and apply structured intents only to explicitly requested paper, testnet, and/or alpaca_paper targets. Each requested target must be enabled; real trading is never an implicit target.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args tools.ApplyStrategyIntentsArgs) (*mcp.CallToolResult, tools.ApplyStrategyIntentsResult, error) {
 		result, err := tools.ApplyStrategyIntents(ctx, dsn, riskStore, paperStore, args)
 		return nil, result, err
@@ -134,7 +134,7 @@ func newServer(store *storage.Store, riskStore *riskstorage.Store, paperStore *p
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_automation_controls",
-		Description: "Read paper and testnet automation gates and the external agent selected to run automation.",
+		Description: "Read paper, testnet, and alpaca_paper automation gates and the external agent selected to run automation.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ tools.GetAutomationControlsArgs) (*mcp.CallToolResult, tools.AutomationControlsResult, error) {
 		result, err := tools.GetAutomationControls(ctx, paperStore)
 		return nil, result, err

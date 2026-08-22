@@ -22,8 +22,9 @@ import (
 const startingCash = 10000.0
 
 var (
-	ErrInvalidActiveAgent = errors.New("paperstore: active agent must be claude_code or codex")
-	ErrTestnetDisabled    = errors.New("paperstore: testnet trading is disabled")
+	ErrInvalidActiveAgent  = errors.New("paperstore: active agent must be claude_code or codex")
+	ErrTestnetDisabled     = errors.New("paperstore: testnet trading is disabled")
+	ErrAlpacaPaperDisabled = errors.New("paperstore: alpaca paper trading is disabled")
 )
 
 type Store struct {
@@ -75,17 +76,21 @@ type equitySnapshot struct {
 
 // AutomationControls are the switches used by an external agent loop. Enabled
 // remains the paper-trading switch for compatibility with existing callers.
+// AlpacaPaperEnabled is independent of Enabled (crypto paper) — a distinct
+// execution venue with its own blast radius, same precedent as TestnetEnabled.
 type AutomationControls struct {
-	Enabled        bool
-	TestnetEnabled bool
-	ActiveAgent    string
+	Enabled            bool
+	TestnetEnabled     bool
+	AlpacaPaperEnabled bool
+	ActiveAgent        string
 }
 
 // AutomationPatch updates only non-nil fields.
 type AutomationPatch struct {
-	Enabled        *bool
-	TestnetEnabled *bool
-	ActiveAgent    *string
+	Enabled            *bool
+	TestnetEnabled     *bool
+	AlpacaPaperEnabled *bool
+	ActiveAgent        *string
 }
 
 func validateAutomationPatch(patch AutomationPatch) error {
@@ -365,8 +370,8 @@ func (s *Store) GetAutomationControls(ctx context.Context) (AutomationControls, 
 	}
 	var controls AutomationControls
 	err := s.pool.QueryRow(ctx, `
-		SELECT enabled, testnet_enabled, active_agent FROM paper_state WHERE id = 1
-	`).Scan(&controls.Enabled, &controls.TestnetEnabled, &controls.ActiveAgent)
+		SELECT enabled, testnet_enabled, alpaca_paper_enabled, active_agent FROM paper_state WHERE id = 1
+	`).Scan(&controls.Enabled, &controls.TestnetEnabled, &controls.AlpacaPaperEnabled, &controls.ActiveAgent)
 	return controls, err
 }
 
@@ -396,6 +401,32 @@ func (s *Store) WithTestnetEnabled(ctx context.Context, fn func() error) error {
 	return tx.Commit(ctx)
 }
 
+// WithAlpacaPaperEnabled mirrors WithTestnetEnabled exactly, gating on the
+// alpaca_paper_enabled switch instead — a distinct venue with its own lock
+// check, so enabling/disabling stock trading never races an in-flight order.
+func (s *Store) WithAlpacaPaperEnabled(ctx context.Context, fn func() error) error {
+	if _, _, err := s.Portfolio(ctx); err != nil {
+		return err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var enabled bool
+	if err := tx.QueryRow(ctx, `SELECT alpaca_paper_enabled FROM paper_state WHERE id = 1 FOR UPDATE`).Scan(&enabled); err != nil {
+		return err
+	}
+	if !enabled {
+		return ErrAlpacaPaperDisabled
+	}
+	if err := fn(); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // PatchAutomationControls atomically applies the supplied controls and returns
 // their resulting values.
 func (s *Store) PatchAutomationControls(ctx context.Context, patch AutomationPatch) (AutomationControls, error) {
@@ -416,8 +447,8 @@ func (s *Store) PatchAutomationControls(ctx context.Context, patch AutomationPat
 
 	var controls AutomationControls
 	if err := tx.QueryRow(ctx, `
-		SELECT enabled, testnet_enabled, active_agent FROM paper_state WHERE id = 1 FOR UPDATE
-	`).Scan(&controls.Enabled, &controls.TestnetEnabled, &controls.ActiveAgent); err != nil {
+		SELECT enabled, testnet_enabled, alpaca_paper_enabled, active_agent FROM paper_state WHERE id = 1 FOR UPDATE
+	`).Scan(&controls.Enabled, &controls.TestnetEnabled, &controls.AlpacaPaperEnabled, &controls.ActiveAgent); err != nil {
 		return AutomationControls{}, err
 	}
 	if patch.Enabled != nil {
@@ -426,14 +457,17 @@ func (s *Store) PatchAutomationControls(ctx context.Context, patch AutomationPat
 	if patch.TestnetEnabled != nil {
 		controls.TestnetEnabled = *patch.TestnetEnabled
 	}
+	if patch.AlpacaPaperEnabled != nil {
+		controls.AlpacaPaperEnabled = *patch.AlpacaPaperEnabled
+	}
 	if patch.ActiveAgent != nil {
 		controls.ActiveAgent = *patch.ActiveAgent
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE paper_state
-		SET enabled = $1, testnet_enabled = $2, active_agent = $3, updated_at = now()
+		SET enabled = $1, testnet_enabled = $2, alpaca_paper_enabled = $3, active_agent = $4, updated_at = now()
 		WHERE id = 1
-	`, controls.Enabled, controls.TestnetEnabled, controls.ActiveAgent); err != nil {
+	`, controls.Enabled, controls.TestnetEnabled, controls.AlpacaPaperEnabled, controls.ActiveAgent); err != nil {
 		return AutomationControls{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {

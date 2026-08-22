@@ -58,6 +58,70 @@ func TestPatchAutomationControls_UpdatesOnlyProvidedFields(t *testing.T) {
 	}
 }
 
+func TestPatchAutomationControls_UpdatesAlpacaPaperEnabled(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not set, skipping integration test")
+	}
+	store, err := New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	original, err := store.GetAutomationControls(ctx)
+	if err != nil {
+		t.Fatalf("GetAutomationControls: %v", err)
+	}
+	defer func() {
+		if _, err := store.PatchAutomationControls(ctx, AutomationPatch{AlpacaPaperEnabled: &original.AlpacaPaperEnabled}); err != nil {
+			t.Errorf("restore controls: %v", err)
+		}
+	}()
+
+	enabled := !original.AlpacaPaperEnabled
+	got, err := store.PatchAutomationControls(ctx, AutomationPatch{AlpacaPaperEnabled: &enabled})
+	if err != nil {
+		t.Fatalf("PatchAutomationControls: %v", err)
+	}
+	if got.AlpacaPaperEnabled != enabled {
+		t.Errorf("AlpacaPaperEnabled = %v, want %v", got.AlpacaPaperEnabled, enabled)
+	}
+	// Confirm it's independent of the paper crypto Enabled flag, not aliased
+	// to it — matching the testnet precedent's independence.
+	if got.Enabled != original.Enabled {
+		t.Errorf("Enabled changed from %v to %v — AlpacaPaperEnabled must not affect the paper crypto flag", original.Enabled, got.Enabled)
+	}
+}
+
+func TestWithAlpacaPaperEnabled_RejectsWhenDisabled(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not set, skipping integration test")
+	}
+	store, err := New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	disabled := false
+	if _, err := store.PatchAutomationControls(ctx, AutomationPatch{AlpacaPaperEnabled: &disabled}); err != nil {
+		t.Fatalf("PatchAutomationControls (disable): %v", err)
+	}
+
+	called := false
+	err = store.WithAlpacaPaperEnabled(ctx, func() error { called = true; return nil })
+	if !errors.Is(err, ErrAlpacaPaperDisabled) {
+		t.Errorf("err = %v, want ErrAlpacaPaperDisabled", err)
+	}
+	if called {
+		t.Error("fn must not run when alpaca_paper_enabled is false")
+	}
+}
+
 func TestApplyFill_BuyThenSellUpdatesCashAndPositions(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {

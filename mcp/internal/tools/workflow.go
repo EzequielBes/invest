@@ -182,7 +182,7 @@ type StrategyIntent = strategistrunner.Intent
 type ApplyStrategyIntentsArgs struct {
 	AnalysisRunID string           `json:"analysis_run_id" jsonschema:"completed analysis run ID"`
 	Intents       []StrategyIntent `json:"intents"`
-	Targets       []string         `json:"targets" jsonschema:"explicit execution targets: paper and/or testnet; real trading is not supported"`
+	Targets       []string         `json:"targets" jsonschema:"explicit execution targets: paper, testnet, and/or alpaca_paper; real trading is not supported"`
 }
 
 type StrategyApplication struct {
@@ -220,6 +220,9 @@ func ApplyStrategyIntents(ctx context.Context, dsn string, riskStore *riskstorag
 	if requested["testnet"] && !controls.TestnetEnabled {
 		return ApplyStrategyIntentsResult{}, fmt.Errorf("testnet automation is disabled")
 	}
+	if requested["alpaca_paper"] && !controls.AlpacaPaperEnabled {
+		return ApplyStrategyIntentsResult{}, fmt.Errorf("alpaca paper automation is disabled")
+	}
 
 	targets := make([]strategistrunner.Target, 0, len(args.Targets))
 	closers := make([]func(), 0, len(args.Targets))
@@ -249,6 +252,14 @@ func ApplyStrategyIntents(ctx context.Context, dsn string, riskStore *riskstorag
 		closers = append(closers, client.Close)
 		targets = append(targets, strategistrunner.Target{ID: "testnet", Executor: client})
 	}
+	if requested["alpaca_paper"] {
+		client, err := executor.NewAlpacaClient(ctx, dsn)
+		if err != nil {
+			return ApplyStrategyIntentsResult{}, err
+		}
+		closers = append(closers, client.Close)
+		targets = append(targets, strategistrunner.Target{ID: "alpaca_paper", Executor: client})
+	}
 
 	applications, err := strategistrunner.ApplyIntentsWithDSN(ctx, dsn, riskStore, strategistrunner.StrategyContext{AnalysisRunID: args.AnalysisRunID}, args.Intents, targets)
 	if err != nil {
@@ -267,8 +278,8 @@ func requestedTargets(targets []string) (map[string]bool, error) {
 	}
 	requested := make(map[string]bool, len(targets))
 	for _, target := range targets {
-		if (target != "paper" && target != "testnet") || requested[target] {
-			return nil, fmt.Errorf("invalid target %q (valid: paper, testnet)", target)
+		if (target != "paper" && target != "testnet" && target != "alpaca_paper") || requested[target] {
+			return nil, fmt.Errorf("invalid target %q (valid: paper, testnet, alpaca_paper)", target)
 		}
 		requested[target] = true
 	}
@@ -278,26 +289,28 @@ func requestedTargets(targets []string) (map[string]bool, error) {
 type GetAutomationControlsArgs struct{}
 
 type AutomationControlsResult struct {
-	PaperEnabled   bool   `json:"paper_enabled"`
-	TestnetEnabled bool   `json:"testnet_enabled"`
-	ActiveAgent    string `json:"active_agent"`
+	PaperEnabled       bool   `json:"paper_enabled"`
+	TestnetEnabled     bool   `json:"testnet_enabled"`
+	AlpacaPaperEnabled bool   `json:"alpaca_paper_enabled"`
+	ActiveAgent        string `json:"active_agent"`
 }
 
 func GetAutomationControls(ctx context.Context, store *paperstore.Store) (AutomationControlsResult, error) {
 	controls, err := store.GetAutomationControls(ctx)
-	return AutomationControlsResult{PaperEnabled: controls.Enabled, TestnetEnabled: controls.TestnetEnabled, ActiveAgent: controls.ActiveAgent}, err
+	return AutomationControlsResult{PaperEnabled: controls.Enabled, TestnetEnabled: controls.TestnetEnabled, AlpacaPaperEnabled: controls.AlpacaPaperEnabled, ActiveAgent: controls.ActiveAgent}, err
 }
 
 type SetAutomationControlsArgs struct {
-	PaperEnabled   *bool   `json:"paper_enabled,omitempty" jsonschema:"optional paper automation switch"`
-	TestnetEnabled *bool   `json:"testnet_enabled,omitempty" jsonschema:"optional testnet automation switch"`
-	ActiveAgent    *string `json:"active_agent,omitempty" jsonschema:"optional external automation agent: claude_code or codex"`
+	PaperEnabled       *bool   `json:"paper_enabled,omitempty" jsonschema:"optional paper automation switch"`
+	TestnetEnabled     *bool   `json:"testnet_enabled,omitempty" jsonschema:"optional testnet automation switch"`
+	AlpacaPaperEnabled *bool   `json:"alpaca_paper_enabled,omitempty" jsonschema:"optional alpaca stock paper automation switch"`
+	ActiveAgent        *string `json:"active_agent,omitempty" jsonschema:"optional external automation agent: claude_code or codex"`
 }
 
 func SetAutomationControls(ctx context.Context, store *paperstore.Store, args SetAutomationControlsArgs) (AutomationControlsResult, error) {
-	if args.PaperEnabled == nil && args.TestnetEnabled == nil && args.ActiveAgent == nil {
+	if args.PaperEnabled == nil && args.TestnetEnabled == nil && args.AlpacaPaperEnabled == nil && args.ActiveAgent == nil {
 		return AutomationControlsResult{}, fmt.Errorf("at least one automation control is required")
 	}
-	controls, err := store.PatchAutomationControls(ctx, paperstore.AutomationPatch{Enabled: args.PaperEnabled, TestnetEnabled: args.TestnetEnabled, ActiveAgent: args.ActiveAgent})
-	return AutomationControlsResult{PaperEnabled: controls.Enabled, TestnetEnabled: controls.TestnetEnabled, ActiveAgent: controls.ActiveAgent}, err
+	controls, err := store.PatchAutomationControls(ctx, paperstore.AutomationPatch{Enabled: args.PaperEnabled, TestnetEnabled: args.TestnetEnabled, AlpacaPaperEnabled: args.AlpacaPaperEnabled, ActiveAgent: args.ActiveAgent})
+	return AutomationControlsResult{PaperEnabled: controls.Enabled, TestnetEnabled: controls.TestnetEnabled, AlpacaPaperEnabled: controls.AlpacaPaperEnabled, ActiveAgent: controls.ActiveAgent}, err
 }
