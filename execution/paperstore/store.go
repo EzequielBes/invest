@@ -243,15 +243,11 @@ func (s *Store) MarkToMarket(ctx context.Context) (Metrics, error) {
 	positionsValue := 0.0
 	for asset, quantity := range positions {
 		var price float64
-		timeframe := "1m"
-		if !risk.IsCrypto(asset) {
-			timeframe = "5m"
-		}
 		err := s.pool.QueryRow(ctx, `
 			SELECT close FROM candles
-			WHERE exchange = $1 AND symbol = $2 AND timeframe = $3
+			WHERE exchange = $1 AND symbol = $2 AND timeframe = '1m'
 			ORDER BY ts DESC LIMIT 1
-		`, risk.ExchangeFor(asset), asset, timeframe).Scan(&price)
+		`, risk.ExchangeFor(asset), asset).Scan(&price)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Metrics{}, fmt.Errorf("paperstore: no current price for held position %s", asset)
 		}

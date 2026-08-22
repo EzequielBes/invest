@@ -16,15 +16,7 @@ import (
 	"strategist/internal/storage"
 )
 
-// priceTimeframeFor returns the candle timeframe to read asset's latest
-// price from — matches the granularity each asset class is actually
-// collected at (crypto: 1m, stocks: 5m via Alpaca's free-tier delay).
-func priceTimeframeFor(asset string) string {
-	if risk.IsCrypto(asset) {
-		return "1m"
-	}
-	return "5m"
-}
+const priceTimeframe = "1m"
 
 type Ranking struct {
 	Asset          string
@@ -180,7 +172,7 @@ func buildPortfolio(ctx context.Context, store *storage.Store, positions map[str
 	riskPositions := make(map[string]risk.Position, len(positions))
 	total := cash
 	for asset, quantity := range positions {
-		price, found, err := store.LatestPrice(ctx, risk.ExchangeFor(asset), asset, priceTimeframeFor(asset))
+		price, found, err := store.LatestPrice(ctx, risk.ExchangeFor(asset), asset, priceTimeframe)
 		if err != nil || !found {
 			if err != nil {
 				return risk.PortfolioState{}, 0, err
@@ -198,7 +190,7 @@ func buildPortfolio(ctx context.Context, store *storage.Store, positions map[str
 }
 
 func apply(ctx context.Context, store *storage.Store, riskStore *riskstorage.Store, runID string, target Target, intent Intent, portfolio risk.PortfolioState, portfolioValue float64) (risk.PortfolioState, float64, error) {
-	price, found, err := store.LatestPrice(ctx, risk.ExchangeFor(intent.Asset), intent.Asset, priceTimeframeFor(intent.Asset))
+	price, found, err := store.LatestPrice(ctx, risk.ExchangeFor(intent.Asset), intent.Asset, priceTimeframe)
 	if err != nil || !found {
 		if err != nil {
 			return portfolio, portfolioValue, fmt.Errorf("read %s price: %w", intent.Asset, err)

@@ -57,24 +57,18 @@ func (s *Store) DueIntentOutcomes(ctx context.Context, now time.Time) ([]DueInte
 	return intents, rows.Err()
 }
 
-// CloseAfter returns the first candle close available after at, at
-// asset's configured exchange/timeframe. candles.ts is its open time, so
-// its close is one bar-duration later.
+// CloseAfter returns the first 1m candle close available after at, at
+// asset's configured exchange. candles.ts is its open time, so its close
+// is one minute later.
 func (s *Store) CloseAfter(ctx context.Context, asset string, at time.Time) (float64, bool, error) {
-	timeframe := "1m"
-	barDuration := "1 minute"
-	if !risk.IsCrypto(asset) {
-		timeframe = "5m"
-		barDuration = "5 minutes"
-	}
 	var close float64
 	err := s.pool.QueryRow(ctx, `
 		SELECT close FROM candles
-		WHERE exchange = $1 AND symbol = $2 AND timeframe = $3
-		  AND ts + $4::interval > $5
+		WHERE exchange = $1 AND symbol = $2 AND timeframe = '1m'
+		  AND ts + interval '1 minute' > $3
 		ORDER BY ts
 		LIMIT 1
-	`, risk.ExchangeFor(asset), asset, timeframe, barDuration, at).Scan(&close)
+	`, risk.ExchangeFor(asset), asset, at).Scan(&close)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, false, nil

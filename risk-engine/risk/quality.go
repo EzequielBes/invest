@@ -21,10 +21,9 @@ const (
 	minimumActiveExchangesCrypto = 2
 	minimumActiveExchangesStock  = 1
 
-	// minimumConsecutiveBars: crypto's abundant 1m candle data supports a
-	// tight window; stocks (free-tier Alpaca, 15min-delayed) use a
-	// coarser 5m candle, so the same 60-bar count spans 5 hours instead
-	// of 1 — a realistic window given the data actually available.
+	// minimumConsecutiveBars: both classes use the same 1m granularity
+	// today (Alpaca's free tier is 15min-delayed but still 1m-resolution),
+	// so the bar count is the same — only exchange redundancy differs.
 	minimumConsecutiveBarsCrypto = 60
 	minimumConsecutiveBarsStock  = 60
 )
@@ -82,14 +81,15 @@ type marketDataReader interface {
 }
 
 // qualityTimeframe returns the reference exchange, candle timeframe, and
-// per-bar duration to check asset's data quality against — crypto and
-// stocks route to different venues/granularities (see ExchangeFor).
+// per-bar count to check asset's data quality against — crypto and
+// stocks route to different venues (see ExchangeFor) but the same 1m
+// candle granularity.
 func qualityTimeframe(asset string) (exchange, timeframe string, minConsecutiveBars int) {
 	exchange = ExchangeFor(asset)
 	if IsCrypto(asset) {
 		return exchange, "1m", minimumConsecutiveBarsCrypto
 	}
-	return exchange, "5m", minimumConsecutiveBarsStock
+	return exchange, "1m", minimumConsecutiveBarsStock
 }
 
 func checkDataFreshness(ctx context.Context, md marketDataReader, asset string, maxAgeMinutes int, asOf *time.Time) RuleResult {

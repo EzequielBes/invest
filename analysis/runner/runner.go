@@ -102,9 +102,6 @@ func eligibleAssets(ctx context.Context, riskStore *riskstorage.Store, assets []
 	for _, asset := range assets {
 		exchange := risk.ExchangeFor(asset)
 		timeframe := "1m"
-		if !risk.IsCrypto(asset) {
-			timeframe = "5m"
-		}
 		metrics, err := riskStore.EligibilityMetrics(ctx, asset, exchange, timeframe)
 		if err != nil {
 			return nil, nil, fmt.Errorf("read eligibility metrics for %s: %w", asset, err)
