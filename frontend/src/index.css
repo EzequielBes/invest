@@ -100,12 +100,14 @@ button { font: inherit; color: inherit; }
   position: relative;
   top: 1px;
 }
-.tab:hover { color: var(--paper); }
+.tab { transition: color 0.15s ease, background 0.15s ease; }
+.tab:hover { color: var(--paper); background: rgba(236, 229, 216, 0.04); }
 .tab.active {
   background: var(--ink-raised);
   border-color: var(--hairline);
   color: var(--brass-bright);
 }
+.tab.active:hover { background: var(--ink-raised); }
 button:focus-visible {
   outline: 2px solid var(--brass);
   outline-offset: 2px;
@@ -241,10 +243,20 @@ button:focus-visible {
   border: 1px solid var(--hairline);
   border-radius: 6px;
   padding: 16px 18px;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.panel:hover { border-color: var(--paper-dim); }
+.panel-hero {
+  grid-column: span 2;
+  background: linear-gradient(160deg, var(--ink-raised), var(--ink));
+  border-color: var(--hairline);
 }
 .panel-label { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--paper-dim); margin-bottom: 8px; }
 .panel-body { font-size: 14px; }
 .panel-body .stat-value { font-size: 22px; }
+.stat-value-hero { font-size: 40px; color: var(--brass-bright); }
+.panel-empty { color: var(--paper-dim); font-style: italic; font-family: var(--font-serif); }
+@media (max-width: 640px) { .panel-hero { grid-column: span 1; } }
 
 .config-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .config-list li { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
@@ -254,7 +266,8 @@ button:focus-visible {
 
 /* ---- noticias ---- */
 .news-list { display: flex; flex-direction: column; gap: 10px; }
-.news-item { background: var(--ink); border: 1px solid var(--hairline); border-radius: 4px; padding: 12px 14px; }
+.news-item { background: var(--ink); border: 1px solid var(--hairline); border-radius: 4px; padding: 12px 14px; transition: border-color 0.15s ease; }
+.news-item:hover { border-color: var(--brass); }
 .news-item a { color: var(--brass-bright); text-decoration: none; font-weight: 600; font-size: 14px; }
 .news-item a:hover { text-decoration: underline; }
 .news-item .ledger-meta { margin-top: 4px; }

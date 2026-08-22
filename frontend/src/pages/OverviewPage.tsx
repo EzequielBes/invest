@@ -21,6 +21,15 @@ export default function OverviewPage() {
   return (
     <div>
       <div className="overview-grid">
+        <div className="panel panel-hero">
+          <div className="panel-label">patrimonio atual</div>
+          <div className="panel-body">
+            {equity.error && <span className="error">erro</span>}
+            {latestEquity && <div className="stat-value stat-value-hero">{latestEquity.total_equity.toFixed(2)}</div>}
+            {!latestEquity && !equity.error && <span className="panel-empty">sem snapshots ainda</span>}
+          </div>
+        </div>
+
         <div className="panel">
           <div className="panel-label">estado de risco</div>
           <div className="panel-body">
@@ -30,16 +39,7 @@ export default function OverviewPage() {
                 {risk.data.state.status}
               </span>
             )}
-            {!risk.data && !risk.error && <span>carregando...</span>}
-          </div>
-        </div>
-
-        <div className="panel">
-          <div className="panel-label">patrimonio atual</div>
-          <div className="panel-body">
-            {equity.error && <span className="error">erro</span>}
-            {latestEquity && <div className="stat-value">{latestEquity.total_equity.toFixed(2)}</div>}
-            {!latestEquity && !equity.error && <span>sem snapshots ainda</span>}
+            {!risk.data && !risk.error && <span className="panel-empty">carregando...</span>}
           </div>
         </div>
 
@@ -69,7 +69,7 @@ export default function OverviewPage() {
       <div className="detail-panel">
         <h3>Ultimas noticias</h3>
         {news.error && <p className="error" role="alert">{news.error}</p>}
-        {news.data && news.data.length === 0 && <p>Nenhuma noticia coletada ainda.</p>}
+        {news.data && news.data.length === 0 && <p className="panel-empty">Nenhuma noticia coletada ainda.</p>}
         {news.data && news.data.length > 0 && (
           <div className="news-list">
             {news.data.slice(0, 5).map((item) => (
